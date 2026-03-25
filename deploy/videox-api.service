@@ -1,0 +1,22 @@
+[Unit]
+Description=VideoX FastAPI Service
+After=network.target redis.service
+
+[Service]
+Type=notify
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/videox/backend
+Environment="PATH=/opt/videox/venv/bin"
+Environment="PYTHONPATH=/opt/videox/backend"
+ExecStart=/opt/videox/venv/bin/gunicorn app.main:app \
+    --config gunicorn.conf.py
+ExecReload=/bin/kill -s HUP $MAINPID
+KillMode=mixed
+TimeoutStopSec=30
+PrivateTmp=true
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

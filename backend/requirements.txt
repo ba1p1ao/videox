@@ -1,0 +1,56 @@
+# ========================================
+# VideoX - 全平台视频下载器依赖
+# 版本锁定，确保环境一致性
+# ========================================
+
+# FastAPI 核心
+fastapi==0.115.3
+uvicorn[standard]==0.27.1
+starlette==0.41.3
+
+# 生产环境 WSGI 服务器
+gunicorn==23.0.0
+
+# 视频下载核心引擎
+yt-dlp==2026.3.17
+
+# 浏览器模拟（反爬必备）
+curl_cffi==0.14.0
+
+# HTTP 客户端
+requests==2.32.3
+aiohttp==3.13.3
+
+# 配置解析（抖音 msToken 需要）
+pyyaml>=6.0
+
+# 国密算法（抖音 A-Bogus 签名需要）
+gmssl==3.2.2
+
+# 数据验证
+pydantic==2.12.4
+pydantic-settings==2.12.0
+
+# 日志
+loguru==0.7.2
+
+# 环境变量
+python-dotenv==1.0.1
+
+# 文件上传支持
+python-multipart==0.0.9
+
+# Redis 缓存
+redis==7.3.0
+
+# Celery 任务队列
+celery==5.6.2
+
+# 浏览器 Cookie 读取
+browser-cookie3==0.20.1
+
+# 浏览器自动化（抖音图文笔记解析需要）
+playwright==1.58.0
+
+# 接口限流
+slowapi>=0.1.9
