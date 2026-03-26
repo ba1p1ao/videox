@@ -202,9 +202,24 @@ install_nodejs() {
     # 移除旧版本
     apt remove -y nodejs 2>/dev/null || true
     
-    # 使用 NodeSource 官方脚本（自动使用国内镜像）
-    curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
-    apt install -y nodejs
+    # 使用清华镜像源安装 Node.js 20
+    local NODE_VER="20.18.1"
+    local NODE_ARCH=$(dpkg --print-architecture)
+    local NODE_URL="https://mirrors.tuna.tsinghua.edu.cn/nodejs-release/v${NODE_VER}/node-v${NODE_VER}-linux-${NODE_ARCH}.tar.gz"
+    
+    log_info "下载 Node.js from: $NODE_URL"
+    
+    # 下载并解压
+    cd /tmp
+    curl -fsSL "$NODE_URL" -o nodejs.tar.gz
+    mkdir -p /usr/local/lib/nodejs
+    tar -xzf nodejs.tar.gz -C /usr/local/lib/nodejs
+    rm -f nodejs.tar.gz
+    
+    # 创建软链接
+    ln -sf /usr/local/lib/nodejs/node-v${NODE_VER}-linux-${NODE_ARCH}/bin/node /usr/local/bin/node
+    ln -sf /usr/local/lib/nodejs/node-v${NODE_VER}-linux-${NODE_ARCH}/bin/npm /usr/local/bin/npm
+    ln -sf /usr/local/lib/nodejs/node-v${NODE_VER}-linux-${NODE_ARCH}/bin/npx /usr/local/bin/npx
     
     # 配置 npm 淘宝镜像
     npm config set registry https://registry.npmmirror.com
