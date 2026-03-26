@@ -32,7 +32,7 @@ pipeline {
                         chmod 700 ~/.ssh
                         ssh-keyscan -H ${DEPLOY_HOST} >> ~/.ssh/known_hosts 2>/dev/null
                         
-                        # 同步代码
+                        # 同步代码到临时目录
                         rsync -avz -e "ssh -i ${SSH_KEY} -o StrictHostKeyChecking=no" \
                             --exclude='.git' \
                             --exclude='node_modules' \
@@ -45,7 +45,7 @@ pipeline {
                             --exclude='*.tar.gz' \
                             --exclude='.idea' \
                             --exclude='.vscode' \
-                            ./ ${SSH_USER}@${DEPLOY_HOST}:${PROJECT_DIR}/
+                            ./ ${SSH_USER}@${DEPLOY_HOST}:/tmp/videox-deploy/
                     '''
                 }
             }
@@ -60,6 +60,18 @@ pipeline {
                 ]) {
                     sh '''
                         ssh -i ${SSH_KEY} -o StrictHostKeyChecking=no ${SSH_USER}@${DEPLOY_HOST} "
+                            # 同步到项目目录
+                            sudo rsync -avz --delete \
+                                --exclude='.env' \
+                                --exclude='venv' \
+                                --exclude='downloads/*' \
+                                --exclude='logs/*.log' \
+                                /tmp/videox-deploy/ ${PROJECT_DIR}/
+                            
+                            # 清理临时目录
+                            rm -rf /tmp/videox-deploy
+                            
+                            # 执行部署脚本
                             cd ${PROJECT_DIR}
                             sudo bash deploy/deploy.sh
                         "
