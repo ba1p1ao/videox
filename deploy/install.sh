@@ -543,6 +543,7 @@ server {
     gzip on;
     gzip_types text/plain text/css application/json application/javascript text/xml application/xml;
     
+    # 安全头
     add_header X-Frame-Options "DENY" always;
     add_header X-Content-Type-Options "nosniff" always;
     
@@ -557,11 +558,29 @@ server {
     }
     
     location /api/ {
+        # CORS 跨域配置
+        add_header Access-Control-Allow-Origin * always;
+        add_header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS" always;
+        add_header Access-Control-Allow-Headers "Authorization, Content-Type, Accept, Origin, X-Requested-With" always;
+        add_header Access-Control-Max-Age 3600 always;
+        
+        # 预检请求直接返回
+        if (\$request_method = OPTIONS) {
+            add_header Access-Control-Allow-Origin * always;
+            add_header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS" always;
+            add_header Access-Control-Allow-Headers "Authorization, Content-Type, Accept, Origin, X-Requested-With" always;
+            add_header Access-Control-Max-Age 3600 always;
+            add_header Content-Length 0;
+            add_header Content-Type "text/plain; charset=utf-8";
+            return 204;
+        }
+        
         proxy_pass http://127.0.0.1:8000;
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
         proxy_connect_timeout 60s;
         proxy_send_timeout 300s;
         proxy_read_timeout 300s;
@@ -569,6 +588,19 @@ server {
     }
     
     location /api/v1/download/ {
+        # CORS 跨域配置
+        add_header Access-Control-Allow-Origin * always;
+        add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
+        add_header Access-Control-Allow-Headers "Authorization, Content-Type, Accept, Origin" always;
+        
+        if (\$request_method = OPTIONS) {
+            add_header Access-Control-Allow-Origin * always;
+            add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
+            add_header Access-Control-Allow-Headers "Authorization, Content-Type, Accept, Origin" always;
+            add_header Content-Length 0;
+            return 204;
+        }
+        
         proxy_pass http://127.0.0.1:8000;
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
