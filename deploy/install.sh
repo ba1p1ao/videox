@@ -204,7 +204,13 @@ install_nodejs() {
     
     # 使用清华镜像源安装 Node.js 20
     local NODE_VER="20.18.1"
-    local NODE_ARCH=$(dpkg --print-architecture)
+    local ARCH=$(uname -m)
+    # 转换架构名称：x86_64 -> x64, aarch64 -> arm64
+    case "$ARCH" in
+        x86_64)  NODE_ARCH="x64" ;;
+        aarch64) NODE_ARCH="arm64" ;;
+        *)       NODE_ARCH="$ARCH" ;;
+    esac
     local NODE_URL="https://mirrors.tuna.tsinghua.edu.cn/nodejs-release/v${NODE_VER}/node-v${NODE_VER}-linux-${NODE_ARCH}.tar.gz"
     
     log_info "下载 Node.js from: $NODE_URL"
