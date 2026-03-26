@@ -475,7 +475,7 @@ After=network.target redis.service
 Type=notify
 User=root
 WorkingDirectory=$PROJECT_DIR/backend
-Environment=PATH=$PROJECT_DIR/venv/bin
+Environment=PATH=$PROJECT_DIR/venv/bin:/usr/bin:/bin
 ExecStart=$PROJECT_DIR/venv/bin/gunicorn app.main:app --config gunicorn.conf.py
 Restart=always
 RestartSec=5
@@ -494,7 +494,7 @@ After=network.target redis.service
 Type=simple
 User=root
 WorkingDirectory=$PROJECT_DIR/backend
-Environment=PATH=$PROJECT_DIR/venv/bin
+Environment=PATH=$PROJECT_DIR/venv/bin:/usr/bin:/bin
 ExecStart=$PROJECT_DIR/venv/bin/celery -A app.core.celery_app worker --loglevel=info --concurrency=4
 Restart=always
 RestartSec=5
