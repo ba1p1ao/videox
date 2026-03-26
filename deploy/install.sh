@@ -305,14 +305,14 @@ install_playwright() {
         fi
     done
     
-    # 国内镜像失败则尝试官方源
-    if [ "$installed" = false ]; then
-        log_info "尝试官方源..."
-        unset PLAYWRIGHT_DOWNLOAD_HOST
-        playwright install chromium >> "$LOG_FILE" 2>&1 || log_warn "Playwright 浏览器安装跳过"
-    fi
-    
-    log_success "Playwright 安装完成"
+    # # 国内镜像失败则尝试官方源
+    # if [ "$installed" = false ]; then
+    #     log_info "尝试官方源..."
+    #     unset PLAYWRIGHT_DOWNLOAD_HOST
+    #     playwright install chromium >> "$LOG_FILE" 2>&1 || 
+    # fi
+    log_warn "Playwright 浏览器安装跳过, 请手动下载"
+    # log_success "Playwright 安装完成"
 }
 
 # ==================== 构建前端 ====================
@@ -389,8 +389,8 @@ configure_nginx() {
     
     cat > /etc/nginx/sites-available/videox << 'NGINX_EOF'
 server {
-    listen 80 default_server;
-    server_name _;
+    listen 8080 default_server;
+    server_name your-domain.com;  # 替换为你的域名或服务器 IP
     client_max_body_size 500M;
     client_body_timeout 300s;
     
