@@ -89,7 +89,55 @@ ai_shipinxiazai/
 
 ## 快速开始
 
-### 1. 环境要求
+### 一键部署脚本（推荐）
+
+适用于全新 Ubuntu 云主机，自动完成环境配置和项目部署。
+
+**使用方法：**
+
+```bash
+# 1. 上传项目到服务器（或使用 git clone）
+scp -r ai_shipinxiazai user@your-server:/home/user/
+
+# 2. 登录服务器执行部署脚本
+ssh user@your-server
+cd /home/user/ai_shipinxiazai
+sudo bash deploy/install.sh /home/user/ai_shipinxiazai
+```
+
+**脚本功能：**
+- 自动清理旧环境，避免冲突
+- 配置国内镜像源（阿里云 APT、清华 Node.js、阿里云 pip）
+- 安装 Node.js 22.x LTS、Python 3、Redis、Nginx、FFmpeg
+- 构建前端、安装 Python 依赖、安装 Playwright Chromium
+- 配置 systemd 服务（videox-api、videox-celery）
+- 自动启动服务并验证
+
+**部署完成后：**
+- 前端界面: `http://<服务器IP>:8080`
+- API 文档: `http://<服务器IP>:8080/api/v1/docs`
+- 安装日志: `/var/log/videox-install.log`
+
+**常用命令：**
+```bash
+# 查看服务状态
+systemctl status videox-api videox-celery
+
+# 重启服务
+systemctl restart videox-api
+
+# 查看日志
+tail -f /opt/videox/backend/logs/app_*.log
+
+# 重新部署
+sudo bash deploy/install.sh /home/user/ai_shipinxiazai
+```
+
+---
+
+### 手动部署
+
+#### 1. 环境要求
 
 - Python 3.10+
 - Node.js 18+
