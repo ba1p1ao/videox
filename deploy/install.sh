@@ -389,8 +389,9 @@ configure_nginx() {
     
     cat > /etc/nginx/sites-available/videox << 'NGINX_EOF'
 server {
-    listen 8080 default_server;
-    server_name your-domain.com;  # 替换为你的域名或服务器 IP
+    listen 80 default_server;
+    listen 8080;
+    server_name _;
     client_max_body_size 500M;
     client_body_timeout 300s;
     
@@ -400,6 +401,7 @@ server {
     add_header X-Frame-Options "DENY" always;
     add_header X-Content-Type-Options "nosniff" always;
     
+    # 前端静态文件
     location / {
         root __PROJECT_DIR__/frontend/dist;
         index index.html;
@@ -410,54 +412,34 @@ server {
         }
     }
     
+    # API 代理 - 统一 CORS 处理
     location /api/ {
-        add_header Access-Control-Allow-Origin * always;
-        add_header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS" always;
-        add_header Access-Control-Allow-Headers "Authorization, Content-Type, Accept, Origin, X-Requested-With" always;
-        add_header Access-Control-Max-Age 3600 always;
-        
+        # 预检请求直接返回
         if ($request_method = OPTIONS) {
             add_header Access-Control-Allow-Origin * always;
             add_header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS" always;
-            add_header Access-Control-Allow-Headers "Authorization, Content-Type, Accept, Origin, X-Requested-With" always;
-            add_header Access-Control-Max-Age 3600 always;
+            add_header Access-Control-Allow-Headers "*" always;
+            add_header Access-Control-Max-Age 86400 always;
             add_header Content-Length 0;
             add_header Content-Type "text/plain; charset=utf-8";
             return 204;
         }
         
+        # CORS 头
+        add_header Access-Control-Allow-Origin * always;
+        add_header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS" always;
+        add_header Access-Control-Allow-Headers "*" always;
+        add_header Access-Control-Expose-Headers "*" always;
+        
         proxy_pass http://127.0.0.1:8000;
         proxy_http_version 1.1;
-        proxy_set_header Host $host;
+        proxy_set_header Host $host:$server_port;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_connect_timeout 60s;
         proxy_send_timeout 300s;
         proxy_read_timeout 300s;
-        proxy_buffering off;
-    }
-    
-    location /api/v1/download/ {
-        add_header Access-Control-Allow-Origin * always;
-        add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
-        add_header Access-Control-Allow-Headers "Authorization, Content-Type, Accept, Origin" always;
-        
-        if ($request_method = OPTIONS) {
-            add_header Access-Control-Allow-Origin * always;
-            add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
-            add_header Access-Control-Allow-Headers "Authorization, Content-Type, Accept, Origin" always;
-            add_header Content-Length 0;
-            return 204;
-        }
-        
-        proxy_pass http://127.0.0.1:8000;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_connect_timeout 60s;
-        proxy_send_timeout 600s;
-        proxy_read_timeout 600s;
         proxy_buffering off;
     }
 }
