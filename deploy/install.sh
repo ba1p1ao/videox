@@ -8,11 +8,13 @@ set -e
 
 # ==================== 配置变量 ====================
 PROJECT_DIR="/opt/videox"
+NODE_VER="22.14.0"  # Node.js 22 LTS，满足 Vite 7.x 要求
 
 # 环境状态变量
 PYTHON_CMD=""
 PYTHON_VER=""
 PIP_OK=false
+VENV_OK=false
 NODE_OK=false
 REDIS_OK=0  # 0=未安装, 1=运行中, 2=已安装未运行
 FFMPEG_OK=false
@@ -58,7 +60,7 @@ check_os() {
 
 check_root() {
     if [ "$EUID" -ne 0 ]; then
-        log_error "请使用 root 权限运行: sudo bash deploy/install.sh"
+        log_error "请使用 root 权限运行: sudo bash deploy/install.sh <源目录>"
         exit 1
     fi
     log_success "Root 权限检查通过"
@@ -67,7 +69,8 @@ check_root() {
 check_python() {
     log_info "检查 Python..."
     
-    for cmd in python3.12 python3.10 python3.10 python3; do
+    # 按版本优先级检测
+    for cmd in python3.12 python3.11 python3.10 python3; do
         if check_cmd "$cmd"; then
             local ver=$($cmd -c 'import sys; print(sys.version_info.major*100+sys.version_info.minor)' 2>/dev/null)
             if [ "$ver" -ge 310 ]; then
@@ -78,7 +81,7 @@ check_python() {
             fi
         fi
     done
-    apt install python3.10-venv
+    
     log_warn "未找到 Python 3.10+，需要安装"
 }
 
@@ -92,15 +95,39 @@ check_pip() {
     fi
 }
 
+check_venv() {
+    log_info "检查 python3-venv..."
+    local py="${PYTHON_CMD:-python3}"
+    if $py -m venv --help &> /dev/null; then
+        VENV_OK=true
+        log_success "python3-venv 可用"
+    else
+        log_warn "python3-venv 未安装"
+    fi
+}
+
 check_nodejs() {
     log_info "检查 Node.js..."
     if check_cmd node; then
-        local major=$(node -v 2>/dev/null | sed 's/v//' | cut -d. -f1)
-        if [ "${major:-0}" -ge 16 ]; then
+        local version=$(node -v 2>/dev/null)
+        local major=$(echo "$version" | sed 's/v//' | cut -d. -f1)
+        local minor=$(echo "$version" | sed 's/v//' | cut -d. -f2)
+        
+        # Vite 7.x 要求: Node.js 20.19+ 或 22.12+
+        local version_ok=false
+        if [ "$major" -ge 23 ]; then
+            version_ok=true
+        elif [ "$major" -eq 22 ] && [ "$minor" -ge 12 ]; then
+            version_ok=true
+        elif [ "$major" -eq 20 ] && [ "$minor" -ge 19 ]; then
+            version_ok=true
+        fi
+        
+        if [ "$version_ok" = true ]; then
             NODE_OK=true
-            log_success "Node.js $(node -v) 已安装"
+            log_success "Node.js $version 已安装，满足 Vite 7.x 要求"
         else
-            log_warn "Node.js 版本过低，需要 16+"
+            log_warn "Node.js $version 版本过低，Vite 7.x 需要 20.19+ 或 22.12+"
         fi
     else
         log_warn "Node.js 未安装"
@@ -168,6 +195,7 @@ deb http://mirrors.aliyun.com/ubuntu/ $codename-updates main restricted universe
 deb http://mirrors.aliyun.com/ubuntu/ $codename-backports main restricted universe multiverse
 EOF
     
+    apt update
     log_success "APT 镜像源配置完成"
 }
 
@@ -176,49 +204,71 @@ install_python() {
     
     apt update
     apt install -y software-properties-common
-    add-apt-repository -y ppa:deadsnakes/ppa
+    add-apt-repository -y ppa:deadsnakes/ppa 2>/dev/null || true
     apt update
-    apt install -y python3.10 python3.10-venv python3.10-dev python3.10-distutils
+    apt install -y python3.10 python3.10-venv python3.10-dev
     
-    # 安装 pip
-    curl -sS https://bootstrap.pypa.io/get-pip.py | python3.10
-    
-    update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.10 1
+    # 设置默认 python3
+    update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.10 1 2>/dev/null || true
     
     PYTHON_CMD="python3.10"
+    PYTHON_VER="3.10"
     log_success "Python 3.10 安装完成"
 }
 
 install_pip() {
-    log_info "安装 pip 和 venv..."
-    apt install -y python3-pip python3-venv
+    log_info "安装 pip..."
+    apt install -y python3-pip
     PIP_OK=true
     log_success "pip 安装完成"
 }
 
+install_venv() {
+    log_info "安装 python3-venv..."
+    apt install -y python3-venv python3.10-venv 2>/dev/null || apt install -y python3-venv
+    VENV_OK=true
+    log_success "python3-venv 安装完成"
+}
+
 install_nodejs() {
-    log_info "安装 Node.js 22 LTS..."
+    log_info "安装 Node.js ${NODE_VER} LTS..."
     
     # 移除旧版本
     apt remove -y nodejs 2>/dev/null || true
+    rm -rf /usr/local/lib/nodejs 2>/dev/null || true
     rm -f /usr/local/bin/node /usr/local/bin/npm /usr/local/bin/npx 2>/dev/null || true
     
-    # 使用清华镜像源安装 Node.js 22 LTS
-    local NODE_VER="22.14.0"
+    # 转换架构名称
     local ARCH=$(uname -m)
-    # 转换架构名称：x86_64 -> x64, aarch64 -> arm64
     case "$ARCH" in
         x86_64)  NODE_ARCH="x64" ;;
         aarch64) NODE_ARCH="arm64" ;;
         *)       NODE_ARCH="$ARCH" ;;
     esac
+    
     local NODE_URL="https://mirrors.tuna.tsinghua.edu.cn/nodejs-release/v${NODE_VER}/node-v${NODE_VER}-linux-${NODE_ARCH}.tar.gz"
     
-    log_info "下载 Node.js from: $NODE_URL"
+    log_info "下载 Node.js: $NODE_URL"
     
-    # 下载并解压
+    # 下载
     cd /tmp
-    curl -fsSL "$NODE_URL" -o nodejs.tar.gz
+    local retries=3
+    local downloaded=false
+    for i in $(seq 1 $retries); do
+        if curl -fsSL --connect-timeout 30 "$NODE_URL" -o nodejs.tar.gz; then
+            downloaded=true
+            break
+        fi
+        log_warn "下载失败，重试 $i/$retries..."
+        sleep 2
+    done
+    
+    if [ "$downloaded" = false ]; then
+        log_error "Node.js 下载失败，请检查网络"
+        exit 1
+    fi
+    
+    # 解压安装
     mkdir -p /usr/local/lib/nodejs
     tar -xzf nodejs.tar.gz -C /usr/local/lib/nodejs
     rm -f nodejs.tar.gz
@@ -227,6 +277,12 @@ install_nodejs() {
     ln -sf /usr/local/lib/nodejs/node-v${NODE_VER}-linux-${NODE_ARCH}/bin/node /usr/local/bin/node
     ln -sf /usr/local/lib/nodejs/node-v${NODE_VER}-linux-${NODE_ARCH}/bin/npm /usr/local/bin/npm
     ln -sf /usr/local/lib/nodejs/node-v${NODE_VER}-linux-${NODE_ARCH}/bin/npx /usr/local/bin/npx
+    
+    # 验证安装
+    if ! check_cmd node; then
+        log_error "Node.js 安装失败"
+        exit 1
+    fi
     
     # 配置 npm 淘宝镜像
     npm config set registry https://registry.npmmirror.com
@@ -267,7 +323,7 @@ install_system_deps() {
     
     apt update
     apt install -y \
-        build-essential curl wget git unzip \
+        build-essential curl wget git unzip rsync \
         libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 \
         libcups2 libdrm2 libxkbcommon0 libxcomposite1 \
         libxdamage1 libxfixes3 libxrandr2 libgbm1 libasound2 \
@@ -280,7 +336,7 @@ install_system_deps() {
 # ==================== 项目部署函数 ====================
 setup_project_dir() {
     log_info "创建项目目录..."
-    mkdir -p $PROJECT_DIR/{backend,frontend/dist,downloads,logs,venv}
+    mkdir -p $PROJECT_DIR/{backend,frontend/dist,downloads,logs}
     mkdir -p $PROJECT_DIR/backend/{config,logs}
     log_success "项目目录: $PROJECT_DIR"
 }
@@ -288,39 +344,38 @@ setup_project_dir() {
 copy_project_files() {
     log_info "复制项目文件..."
     
-    # 支持通过第一个参数指定源目录
     local src_dir="${1:-}"
     
-    # 如果没有指定源目录，尝试自动检测
-    if [ -z "$src_dir" ]; then
-        # 尝试从脚本位置获取
-        src_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." 2>/dev/null && pwd)" || true
-        
-        # 验证是否是有效的项目目录
-        if [ ! -d "$src_dir/backend" ]; then
-            src_dir=""
-        fi
-    fi
-    
-    # 如果还是没有找到，报错提示
+    # 验证源目录
     if [ -z "$src_dir" ] || [ ! -d "$src_dir/backend" ]; then
         log_error "找不到项目源目录"
-        log_info "请指定源目录: bash deploy/install.sh <项目源目录>"
-        log_info "例如: bash deploy/install.sh /home/user/videox"
+        log_info "用法: sudo bash deploy/install.sh <项目源目录>"
+        log_info "例如: sudo bash deploy/install.sh /home/user/videox"
         exit 1
     fi
     
     log_info "源目录: $src_dir"
     
-    # 复制后端（排除缓存和日志）
-    rsync -av --exclude='__pycache__' --exclude='*.pyc' --exclude='logs/*' \
-        "$src_dir/backend/" $PROJECT_DIR/backend/ 2>/dev/null || \
-        cp -r "$src_dir/backend/"* $PROJECT_DIR/backend/
+    # 复制后端
+    rsync -av --exclude='__pycache__' --exclude='*.pyc' --exclude='logs/*' --exclude='.env' \
+        "$src_dir/backend/" $PROJECT_DIR/backend/
+    
+    # 复制 deploy 目录
+    if [ -d "$src_dir/deploy" ]; then
+        cp -r "$src_dir/deploy" $PROJECT_DIR/
+    fi
     
     # 复制前端构建文件（如果存在）
     if [ -d "$src_dir/frontend/dist" ]; then
         cp -r "$src_dir/frontend/dist/"* $PROJECT_DIR/frontend/dist/
         log_success "前端文件复制完成"
+    fi
+    
+    # 复制前端源码（用于构建）
+    if [ -d "$src_dir/frontend" ]; then
+        mkdir -p $PROJECT_DIR/frontend_src
+        rsync -av --exclude='node_modules' --exclude='dist' \
+            "$src_dir/frontend/" $PROJECT_DIR/frontend_src/
     fi
     
     log_success "项目文件复制完成"
@@ -329,8 +384,17 @@ copy_project_files() {
 create_venv() {
     log_info "创建 Python 虚拟环境..."
     
+    # 删除旧的虚拟环境
+    rm -rf $PROJECT_DIR/venv
+    
     local py="${PYTHON_CMD:-python3}"
     $py -m venv $PROJECT_DIR/venv
+    
+    if [ ! -f "$PROJECT_DIR/venv/bin/activate" ]; then
+        log_error "虚拟环境创建失败"
+        exit 1
+    fi
+    
     log_success "虚拟环境创建完成"
 }
 
@@ -355,14 +419,13 @@ install_playwright_browser() {
     
     source $PROJECT_DIR/venv/bin/activate
     
-    # 先安装系统依赖
+    # 安装系统依赖
     playwright install-deps chromium 2>/dev/null || true
     
-    # 尝试多个国内镜像
+    # 尝试国内镜像
     local mirrors=(
         "https://mirrors.huaweicloud.com/playwright"
         "https://mirrors.cloud.tencent.com/playwright"
-        "https://playwright.azureedge.net"
     )
     
     local installed=false
@@ -373,12 +436,13 @@ install_playwright_browser() {
             installed=true
             break
         fi
-        log_warn "镜像不可用，尝试下一个..."
     done
     
+    # 如果国内镜像都失败，尝试官方源
     if [ "$installed" = false ]; then
-        log_warn "所有镜像都失败，跳过 Playwright 浏览器安装"
-        log_info "如需 Playwright，请手动下载后放置到 ~/.cache/ms-playwright/"
+        log_info "尝试官方源..."
+        unset PLAYWRIGHT_DOWNLOAD_HOST
+        playwright install chromium || log_warn "Playwright 浏览器安装失败，跳过"
     fi
     
     log_success "Playwright 安装完成"
@@ -387,24 +451,22 @@ install_playwright_browser() {
 build_frontend() {
     log_info "构建前端..."
     
-    # 使用与 copy_project_files 相同的逻辑获取源目录
-    local src_dir="${1:-}"
-    if [ -z "$src_dir" ]; then
-        src_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." 2>/dev/null && pwd)" || true
-        [ ! -d "$src_dir/backend" ] && src_dir=""
-    fi
-    
-    if [ -z "$src_dir" ]; then
-        log_warn "无法确定源目录，跳过前端构建"
-        return
-    fi
-    
-    if [ -f "$src_dir/frontend/package.json" ]; then
-        cd "$src_dir/frontend"
+    if [ -d "$PROJECT_DIR/frontend_src" ]; then
+        cd $PROJECT_DIR/frontend_src
+        
+        # 清理旧的 node_modules
+        rm -rf node_modules package-lock.json
+        
+        # 安装依赖
         npm install
+        
+        # 构建
         npm run build
+        
+        # 复制构建产物
         mkdir -p $PROJECT_DIR/frontend/dist
         cp -r dist/* $PROJECT_DIR/frontend/dist/
+        
         cd - > /dev/null
         log_success "前端构建完成"
     else
@@ -416,6 +478,12 @@ configure_env() {
     log_info "配置环境变量..."
     
     local ip=$(get_server_ip)
+    
+    # 如果已有 .env 则保留
+    if [ -f "$PROJECT_DIR/backend/.env" ]; then
+        log_warn ".env 已存在，跳过配置"
+        return
+    fi
     
     cat > $PROJECT_DIR/backend/.env << EOF
 DEBUG=false
@@ -493,8 +561,13 @@ EOF
     
     ln -sf /etc/nginx/sites-available/videox /etc/nginx/sites-enabled/
     rm -f /etc/nginx/sites-enabled/default
-    nginx -t
-    log_success "Nginx 配置完成"
+    
+    if nginx -t; then
+        log_success "Nginx 配置完成"
+    else
+        log_error "Nginx 配置有误"
+        exit 1
+    fi
 }
 
 configure_systemd() {
@@ -588,11 +661,21 @@ main() {
     local SRC_DIR="${1:-}"
     
     if [ -n "$SRC_DIR" ]; then
+        # 转换为绝对路径
+        SRC_DIR="$(cd "$SRC_DIR" 2>/dev/null && pwd)" || {
+            log_error "指定的目录不存在: $1"
+            exit 1
+        }
         if [ ! -d "$SRC_DIR/backend" ]; then
-            log_error "指定的源目录无效: $SRC_DIR"
+            log_error "指定的源目录无效: $SRC_DIR (缺少 backend 目录)"
             exit 1
         fi
         log_info "使用指定的源目录: $SRC_DIR"
+    else
+        log_error "请指定项目源目录"
+        log_info "用法: sudo bash deploy/install.sh <项目源目录>"
+        log_info "例如: sudo bash deploy/install.sh /opt/videox"
+        exit 1
     fi
     
     # 1. 基础检查
@@ -603,6 +686,7 @@ main() {
     log_info "===== 环境检测 ====="
     check_python
     check_pip
+    check_venv
     check_nodejs
     check_redis
     check_ffmpeg
@@ -621,6 +705,7 @@ main() {
     
     [ -z "$PYTHON_CMD" ] && install_python
     [ "$PIP_OK" = false ] && install_pip
+    [ "$VENV_OK" = false ] && install_venv
     [ "$NODE_OK" = false ] && install_nodejs
     [ "$REDIS_OK" -eq 0 ] && install_redis
     [ "$FFMPEG_OK" = false ] && install_ffmpeg
@@ -634,11 +719,11 @@ main() {
     create_venv
     install_python_deps
     install_playwright_browser
-    build_frontend "$SRC_DIR"
+    build_frontend
     configure_env
     configure_nginx
     configure_systemd
-    set_permissions 2>/dev/null || chmod -R 755 $PROJECT_DIR
+    chmod -R 755 $PROJECT_DIR
     start_services
     
     # 6. 完成
