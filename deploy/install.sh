@@ -190,8 +190,8 @@ install_python() {
 }
 
 install_pip() {
-    log_info "安装 pip..."
-    apt install -y python3-pip
+    log_info "安装 pip 和 venv..."
+    apt install -y python3-pip python3-venv
     PIP_OK=true
     log_success "pip 安装完成"
 }
