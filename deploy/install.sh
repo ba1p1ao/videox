@@ -67,7 +67,7 @@ check_root() {
 check_python() {
     log_info "检查 Python..."
     
-    for cmd in python3.12 python3.11 python3.10 python3; do
+    for cmd in python3.12 python3.10 python3.10 python3; do
         if check_cmd "$cmd"; then
             local ver=$($cmd -c 'import sys; print(sys.version_info.major*100+sys.version_info.minor)' 2>/dev/null)
             if [ "$ver" -ge 310 ]; then
@@ -172,21 +172,21 @@ EOF
 }
 
 install_python() {
-    log_info "安装 Python 3.11..."
+    log_info "安装 Python 3.10..."
     
     apt update
     apt install -y software-properties-common
     add-apt-repository -y ppa:deadsnakes/ppa
     apt update
-    apt install -y python3.11 python3.11-venv python3.11-dev python3.11-distutils
+    apt install -y python3.10 python3.10-venv python3.10-dev python3.10-distutils
     
     # 安装 pip
-    curl -sS https://bootstrap.pypa.io/get-pip.py | python3.11
+    curl -sS https://bootstrap.pypa.io/get-pip.py | python3.10
     
-    update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1
+    update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.10 1
     
-    PYTHON_CMD="python3.11"
-    log_success "Python 3.11 安装完成"
+    PYTHON_CMD="python3.10"
+    log_success "Python 3.10 安装完成"
 }
 
 install_pip() {
