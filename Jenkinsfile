@@ -8,43 +8,24 @@ pipeline {
     
     environment {
         // 项目配置
-        PROJECT_NAME = 'videox'
-        DEPLOY_DIR = '/opt/videox'
-        VENV_DIR = '/opt/videox/venv'
-        
-        // 从 Jenkins Credentials 获取
-        SERVER_HOST = credentials('server-host')
-        SERVER_USER = credentials('server-user')
+        PROJECT_DIR = '/opt/videox'
     }
     
     stages {
-        stage('Checkout') {
+        stage('拉取代码') {
             steps {
-                echo '📥 拉取代码...'
+                echo '📥 拉取最新代码...'
                 checkout scm
-                sh 'git log -1 --pretty=format:"%h - %s (%ar)"'
+                sh 'git log -1 --pretty=format:"%h - %s"'
             }
         }
         
-        stage('Build Frontend') {
+        stage('同步到服务器') {
             steps {
-                echo '🔨 构建前端...'
-                sh '''
-                    cd frontend
-                    if [ ! -d "node_modules" ]; then
-                        npm install
-                    fi
-                    npm run build
-                '''
-            }
-        }
-        
-        stage('Deploy to Server') {
-            steps {
-                echo '🚀 部署到云主机...'
-                sshagent(credentials: ['server-ssh-key']) {
-                    // 同步代码到服务器
-                    sh """
+                echo '📤 同步代码到云服务器...'
+                sshagent(credentials: ['videox-server-ssh']) {
+                    sh '''
+                        # 同步代码（排除不需要的文件）
                         rsync -avz --delete \
                             --exclude='.git' \
                             --exclude='node_modules' \
@@ -52,63 +33,53 @@ pipeline {
                             --exclude='*.pyc' \
                             --exclude='.env' \
                             --exclude='venv' \
-                            --exclude='downloads' \
+                            --exclude='downloads/*' \
                             --exclude='logs/*.log' \
-                            ./ ${SERVER_USER}@${SERVER_HOST}:${DEPLOY_DIR}/
-                    """
+                            --exclude='*.tar.gz' \
+                            --exclude='.idea' \
+                            --exclude='.vscode' \
+                            ./ ${DEPLOY_USER}@${DEPLOY_HOST}:${PROJECT_DIR}/
+                    '''
                 }
             }
         }
         
-        stage('Install Dependencies') {
+        stage('部署应用') {
             steps {
-                echo '📦 安装依赖...'
-                sshagent(credentials: ['server-ssh-key']) {
-                    sh """
-                        ssh -o StrictHostKeyChecking=no ${SERVER_USER}@${SERVER_HOST} "
-                            cd ${DEPLOY_DIR}
+                echo '🚀 执行部署脚本...'
+                sshagent(credentials: ['videox-server-ssh']) {
+                    sh '''
+                        ssh -o StrictHostKeyChecking=no ${DEPLOY_USER}@${DEPLOY_HOST} "
+                            cd ${PROJECT_DIR}
                             
-                            # 创建虚拟环境（如果不存在）
-                            if [ ! -d 'venv' ]; then
-                                python3 -m venv venv
-                            fi
-                            
-                            # 激活虚拟环境并安装依赖
-                            source venv/bin/activate
-                            pip install --upgrade pip
-                            pip install gunicorn
-                            pip install -r backend/requirements.txt
-                            
-                            # 安装 Playwright 浏览器（首次需要）
-                            playwright install chromium 2>/dev/null || true
+                            # 执行部署脚本
+                            sudo bash deploy/install.sh ${PROJECT_DIR}
                         "
-                    """
+                    '''
                 }
             }
         }
         
-        stage('Restart Services') {
+        stage('健康检查') {
             steps {
-                echo '🔄 重启服务...'
-                sshagent(credentials: ['server-ssh-key']) {
-                    sh """
-                        ssh -o StrictHostKeyChecking=no ${SERVER_USER}@${SERVER_HOST} "
-                            # 重启 systemd 服务
-                            sudo systemctl daemon-reload
-                            sudo systemctl restart videox-celery
-                            sudo systemctl restart videox-api
-                            sudo systemctl restart nginx || true
-                            
+                echo '🏥 检查服务状态...'
+                sshagent(credentials: ['videox-server-ssh']) {
+                    sh '''
+                        ssh -o StrictHostKeyChecking=no ${DEPLOY_USER}@${DEPLOY_HOST} "
                             # 等待服务启动
                             sleep 5
                             
-                            # 健康检查
-                            curl -f http://localhost:8000/api/v1/health || exit 1
+                            # 检查 API
+                            curl -sf http://localhost:8000/api/v1/health && echo ' API 正常'
                             
-                            echo '服务状态：'
-                            sudo systemctl status videox-api --no-pager | head -5
+                            # 检查 Nginx
+                            curl -sf http://localhost:80 && echo ' Nginx 正常'
+                            
+                            echo '服务状态:'
+                            sudo systemctl status videox-api --no-pager | head -3
+                            sudo systemctl status videox-celery --no-pager | head -3
                         "
-                    """
+                    '''
                 }
             }
         }
@@ -117,12 +88,14 @@ pipeline {
     post {
         success {
             echo '✅ 部署成功！'
+            sh '''
+                ssh -o StrictHostKeyChecking=no ${DEPLOY_USER}@${DEPLOY_HOST} "
+                    echo \"访问地址: http://\$(hostname -I | awk '{print \$1}')\"
+                "
+            '''
         }
         failure {
-            echo '❌ 部署失败！'
-        }
-        always {
-            cleanWs()
+            echo '❌ 部署失败！请检查日志'
         }
     }
 }
