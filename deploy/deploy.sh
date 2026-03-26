@@ -64,9 +64,11 @@ if [ -n "$FRONTEND_SRC" ]; then
     log_info "构建前端..."
     npm run build --silent
     
-    # 复制构建产物
-    mkdir -p "$PROJECT_DIR/frontend/dist"
-    cp -r dist/* "$PROJECT_DIR/frontend/dist/"
+    # 复制构建产物（仅当源目录不是目标目录时）
+    if [ "$FRONTEND_SRC" != "$PROJECT_DIR/frontend" ]; then
+        mkdir -p "$PROJECT_DIR/frontend/dist"
+        cp -r dist/* "$PROJECT_DIR/frontend/dist/"
+    fi
     
     cd "$PROJECT_DIR"
     log_success "前端构建完成"
