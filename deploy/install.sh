@@ -287,7 +287,29 @@ setup_project_dir() {
 copy_project_files() {
     log_info "复制项目文件..."
     
-    local src_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+    # 支持通过第一个参数指定源目录
+    local src_dir="${1:-}"
+    
+    # 如果没有指定源目录，尝试自动检测
+    if [ -z "$src_dir" ]; then
+        # 尝试从脚本位置获取
+        src_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." 2>/dev/null && pwd)" || true
+        
+        # 验证是否是有效的项目目录
+        if [ ! -d "$src_dir/backend" ]; then
+            src_dir=""
+        fi
+    fi
+    
+    # 如果还是没有找到，报错提示
+    if [ -z "$src_dir" ] || [ ! -d "$src_dir/backend" ]; then
+        log_error "找不到项目源目录"
+        log_info "请指定源目录: bash deploy/install.sh <项目源目录>"
+        log_info "例如: bash deploy/install.sh /home/user/videox"
+        exit 1
+    fi
+    
+    log_info "源目录: $src_dir"
     
     # 复制后端（排除缓存和日志）
     rsync -av --exclude='__pycache__' --exclude='*.pyc' --exclude='logs/*' \
@@ -364,7 +386,17 @@ install_playwright_browser() {
 build_frontend() {
     log_info "构建前端..."
     
-    local src_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+    # 使用与 copy_project_files 相同的逻辑获取源目录
+    local src_dir="${1:-}"
+    if [ -z "$src_dir" ]; then
+        src_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." 2>/dev/null && pwd)" || true
+        [ ! -d "$src_dir/backend" ] && src_dir=""
+    fi
+    
+    if [ -z "$src_dir" ]; then
+        log_warn "无法确定源目录，跳过前端构建"
+        return
+    fi
     
     if [ -f "$src_dir/frontend/package.json" ]; then
         cd "$src_dir/frontend"
@@ -551,6 +583,17 @@ main() {
     echo "========================================"
     echo ""
     
+    # 获取源目录参数
+    local SRC_DIR="${1:-}"
+    
+    if [ -n "$SRC_DIR" ]; then
+        if [ ! -d "$SRC_DIR/backend" ]; then
+            log_error "指定的源目录无效: $SRC_DIR"
+            exit 1
+        fi
+        log_info "使用指定的源目录: $SRC_DIR"
+    fi
+    
     # 1. 基础检查
     check_root
     check_os
@@ -586,11 +629,11 @@ main() {
     # 5. 部署项目
     log_info "===== 部署项目 ====="
     setup_project_dir
-    copy_project_files
+    copy_project_files "$SRC_DIR"
     create_venv
     install_python_deps
     install_playwright_browser
-    build_frontend
+    build_frontend "$SRC_DIR"
     configure_env
     configure_nginx
     configure_systemd
