@@ -78,7 +78,7 @@ check_python() {
             fi
         fi
     done
-    
+    apt install python3.10-venv
     log_warn "未找到 Python 3.10+，需要安装"
 }
 
@@ -197,13 +197,14 @@ install_pip() {
 }
 
 install_nodejs() {
-    log_info "安装 Node.js 20 LTS..."
+    log_info "安装 Node.js 22 LTS..."
     
     # 移除旧版本
     apt remove -y nodejs 2>/dev/null || true
+    rm -f /usr/local/bin/node /usr/local/bin/npm /usr/local/bin/npx 2>/dev/null || true
     
-    # 使用清华镜像源安装 Node.js 20
-    local NODE_VER="20.18.1"
+    # 使用清华镜像源安装 Node.js 22 LTS
+    local NODE_VER="22.14.0"
     local ARCH=$(uname -m)
     # 转换架构名称：x86_64 -> x64, aarch64 -> arm64
     case "$ARCH" in
