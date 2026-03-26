@@ -355,6 +355,17 @@ copy_project_files() {
     fi
     
     log_info "源目录: $src_dir"
+    log_info "目标目录: $PROJECT_DIR"
+    
+    # 如果源目录和目标目录相同，跳过复制
+    if [ "$src_dir" = "$PROJECT_DIR" ]; then
+        log_info "源目录与目标目录相同，跳过文件复制"
+        # 确保必要目录存在
+        mkdir -p $PROJECT_DIR/frontend/dist
+        mkdir -p $PROJECT_DIR/downloads
+        mkdir -p $PROJECT_DIR/logs
+        return
+    fi
     
     # 复制后端
     rsync -av --exclude='__pycache__' --exclude='*.pyc' --exclude='logs/*' --exclude='.env' \
@@ -366,9 +377,11 @@ copy_project_files() {
     fi
     
     # 复制前端构建文件（如果存在）
-    if [ -d "$src_dir/frontend/dist" ]; then
+    if [ -d "$src_dir/frontend/dist" ] && [ "$(ls -A $src_dir/frontend/dist 2>/dev/null)" ]; then
         cp -r "$src_dir/frontend/dist/"* $PROJECT_DIR/frontend/dist/
         log_success "前端文件复制完成"
+    else
+        log_info "前端 dist 目录不存在或为空，将稍后构建"
     fi
     
     # 复制前端源码（用于构建）
@@ -451,8 +464,17 @@ install_playwright_browser() {
 build_frontend() {
     log_info "构建前端..."
     
-    if [ -d "$PROJECT_DIR/frontend_src" ]; then
-        cd $PROJECT_DIR/frontend_src
+    # 优先使用 frontend_src（从外部复制的情况）
+    # 否则使用 PROJECT_DIR/frontend（项目目录相同的情况）
+    local frontend_dir=""
+    if [ -d "$PROJECT_DIR/frontend_src" ] && [ -f "$PROJECT_DIR/frontend_src/package.json" ]; then
+        frontend_dir="$PROJECT_DIR/frontend_src"
+    elif [ -d "$PROJECT_DIR/frontend" ] && [ -f "$PROJECT_DIR/frontend/package.json" ]; then
+        frontend_dir="$PROJECT_DIR/frontend"
+    fi
+    
+    if [ -n "$frontend_dir" ]; then
+        cd "$frontend_dir"
         
         # 清理旧的 node_modules
         rm -rf node_modules package-lock.json
