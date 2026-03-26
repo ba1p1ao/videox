@@ -22,9 +22,18 @@ pipeline {
         stage('同步到服务器') {
             steps {
                 echo '📤 同步代码到云服务器...'
-                sshagent(credentials: ['videox-server-ssh']) {
+                withCredentials([
+                    sshUserPrivateKey(credentialsId: 'videox-server-ssh', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER'),
+                    string(credentialsId: 'DEPLOY_HOST', variable: 'DEPLOY_HOST')
+                ]) {
                     sh '''
-                        rsync -avz --delete \
+                        # 配置 SSH
+                        mkdir -p ~/.ssh
+                        chmod 700 ~/.ssh
+                        ssh-keyscan -H ${DEPLOY_HOST} >> ~/.ssh/known_hosts 2>/dev/null
+                        
+                        # 同步代码
+                        rsync -avz -e "ssh -i ${SSH_KEY} -o StrictHostKeyChecking=no" \
                             --exclude='.git' \
                             --exclude='node_modules' \
                             --exclude='__pycache__' \
@@ -36,7 +45,7 @@ pipeline {
                             --exclude='*.tar.gz' \
                             --exclude='.idea' \
                             --exclude='.vscode' \
-                            ./ ${DEPLOY_USER}@${DEPLOY_HOST}:${PROJECT_DIR}/
+                            ./ ${SSH_USER}@${DEPLOY_HOST}:${PROJECT_DIR}/
                     '''
                 }
             }
@@ -45,9 +54,12 @@ pipeline {
         stage('增量部署') {
             steps {
                 echo '🚀 执行增量部署...'
-                sshagent(credentials: ['videox-server-ssh']) {
+                withCredentials([
+                    sshUserPrivateKey(credentialsId: 'videox-server-ssh', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER'),
+                    string(credentialsId: 'DEPLOY_HOST', variable: 'DEPLOY_HOST')
+                ]) {
                     sh '''
-                        ssh -o StrictHostKeyChecking=no ${DEPLOY_USER}@${DEPLOY_HOST} "
+                        ssh -i ${SSH_KEY} -o StrictHostKeyChecking=no ${SSH_USER}@${DEPLOY_HOST} "
                             cd ${PROJECT_DIR}
                             sudo bash deploy/deploy.sh
                         "
@@ -59,9 +71,12 @@ pipeline {
         stage('健康检查') {
             steps {
                 echo '🏥 检查服务状态...'
-                sshagent(credentials: ['videox-server-ssh']) {
+                withCredentials([
+                    sshUserPrivateKey(credentialsId: 'videox-server-ssh', keyFileVariable: 'SSH_KEY', usernameVariable: 'SSH_USER'),
+                    string(credentialsId: 'DEPLOY_HOST', variable: 'DEPLOY_HOST')
+                ]) {
                     sh '''
-                        ssh -o StrictHostKeyChecking=no ${DEPLOY_USER}@${DEPLOY_HOST} "
+                        ssh -i ${SSH_KEY} -o StrictHostKeyChecking=no ${SSH_USER}@${DEPLOY_HOST} "
                             echo '=== 服务状态 ==='
                             systemctl status videox-api --no-pager | head -3
                             systemctl status videox-celery --no-pager | head -3
