@@ -1,13 +1,12 @@
 #!/usr/bin/env groovy
 // ========================================
-// VideoX Jenkins Pipeline (本地部署版)
+// VideoX Jenkins Pipeline (增量部署)
 // ========================================
 
 pipeline {
     agent any
     
     environment {
-        // 项目配置
         PROJECT_DIR = '/opt/videox'
     }
     
@@ -16,7 +15,7 @@ pipeline {
             steps {
                 echo '📥 拉取最新代码...'
                 checkout scm
-                sh 'git log -1 --pretty=format:"%h - %s"'
+                sh 'git log -1 --oneline'
             }
         }
         
@@ -25,7 +24,6 @@ pipeline {
                 echo '📤 同步代码到云服务器...'
                 sshagent(credentials: ['videox-server-ssh']) {
                     sh '''
-                        # 同步代码（排除不需要的文件）
                         rsync -avz --delete \
                             --exclude='.git' \
                             --exclude='node_modules' \
@@ -44,16 +42,14 @@ pipeline {
             }
         }
         
-        stage('部署应用') {
+        stage('增量部署') {
             steps {
-                echo '🚀 执行部署脚本...'
+                echo '🚀 执行增量部署...'
                 sshagent(credentials: ['videox-server-ssh']) {
                     sh '''
                         ssh -o StrictHostKeyChecking=no ${DEPLOY_USER}@${DEPLOY_HOST} "
                             cd ${PROJECT_DIR}
-                            
-                            # 执行部署脚本
-                            sudo bash deploy/install.sh ${PROJECT_DIR}
+                            sudo bash deploy/deploy.sh
                         "
                     '''
                 }
@@ -66,18 +62,13 @@ pipeline {
                 sshagent(credentials: ['videox-server-ssh']) {
                     sh '''
                         ssh -o StrictHostKeyChecking=no ${DEPLOY_USER}@${DEPLOY_HOST} "
-                            # 等待服务启动
-                            sleep 5
-                            
-                            # 检查 API
-                            curl -sf http://localhost:8000/api/v1/health && echo ' API 正常'
-                            
-                            # 检查 Nginx
-                            curl -sf http://localhost:80 && echo ' Nginx 正常'
-                            
-                            echo '服务状态:'
-                            sudo systemctl status videox-api --no-pager | head -3
-                            sudo systemctl status videox-celery --no-pager | head -3
+                            echo '=== 服务状态 ==='
+                            systemctl status videox-api --no-pager | head -3
+                            systemctl status videox-celery --no-pager | head -3
+                            echo '=== API 检查 ==='
+                            curl -sf http://localhost:8000/api/v1/health && echo ' ✓'
+                            echo '=== 访问地址 ==='
+                            echo \"http://\$(hostname -I | awk '{print \$1}')\"
                         "
                     '''
                 }
@@ -88,14 +79,9 @@ pipeline {
     post {
         success {
             echo '✅ 部署成功！'
-            sh '''
-                ssh -o StrictHostKeyChecking=no ${DEPLOY_USER}@${DEPLOY_HOST} "
-                    echo \"访问地址: http://\$(hostname -I | awk '{print \$1}')\"
-                "
-            '''
         }
         failure {
-            echo '❌ 部署失败！请检查日志'
+            echo '❌ 部署失败！请查看日志'
         }
     }
 }
