@@ -17,7 +17,7 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Optional, List, Tuple, Set, Dict
 from loguru import logger
-
+from ..core.config import settings
 
 class DownloadCleaner:
     """下载文件清理器
@@ -32,7 +32,7 @@ class DownloadCleaner:
     
     def __init__(
         self,
-        download_dir: str = "downloads",
+        download_dir: str = settings.DOWNLOAD_DIR,
         max_size_mb: int = 5000,
         redis_url: Optional[str] = None,
         cache_expire_hours: int = 1,
