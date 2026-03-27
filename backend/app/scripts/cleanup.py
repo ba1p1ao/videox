@@ -24,7 +24,7 @@ class DownloadCleaner:
     def __init__(
         self,
         download_dir: str = "downloads",
-        max_age_days: int = 7,
+        max_age_days: int = 1,
         max_size_mb: int = 5000,
         clean_on_startup: bool = True,
     ):
