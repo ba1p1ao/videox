@@ -222,10 +222,31 @@
             
             <!-- 视频下载 -->
             <template v-else>
-              <h3 class="section-title">选择格式下载</h3>
+              <h3 class="section-title">
+                {{ isMultiPart ? (selectedPart ? '选择清晰度' : '选择分P') : '选择格式下载' }}
+              </h3>
+            
+              <!-- B站多P视频分P选择提示 -->
+              <div v-if="isMultiPart && !selectedPart" class="multi-part-hint">
+                <el-icon><InfoFilled /></el-icon>
+                <span>检测到多P视频，请先选择要下载的分P</span>
+              </div>
+            
+              <!-- 已选择分P时显示返回按钮 -->
+              <div v-if="isMultiPart && selectedPart" class="selected-part-info">
+                <el-button 
+                  size="small" 
+                  @click="selectedPart = null"
+                  link
+                >
+                  <el-icon><ArrowLeft /></el-icon>
+                  返回分P选择
+                </el-button>
+                <span class="part-label">当前选择：{{ selectedPart.quality }}</span>
+              </div>
             
               <!-- 快速下载按钮 -->
-              <div class="quick-download">
+              <div class="quick-download" v-if="!isMultiPart || selectedPart">
                 <el-button
                   type="primary"
                   size="large"
@@ -240,25 +261,37 @@
               
               <div class="format-list">
                 <div
-                  v-for="fmt in displayFormats"
+                  v-for="fmt in formatList"
                   :key="fmt.format_id"
                   class="format-item"
+                  :class="{ 'part-item': isMultiPart && !selectedPart }"
+                  @click="isMultiPart && !selectedPart && selectPart(fmt)"
                 >
                   <div class="format-info">
-                    <span class="format-badge">{{ fmt.ext?.toUpperCase() || 'MP4' }}</span>
-                    <span class="format-resolution">{{ fmt.resolution || '音频' }}</span>
-                    <span v-if="fmt.filesize" class="format-size">
-                      {{ formatFileSize(fmt.filesize || fmt.filesize_approx) }}
-                    </span>
+                    <!-- 多P视频显示 -->
+                    <template v-if="isMultiPart && !selectedPart">
+                      <span class="part-number">{{ fmt.format_id.toUpperCase() }}</span>
+                      <span class="part-title">{{ fmt.quality }}</span>
+                    </template>
+                    <!-- 普通格式显示 -->
+                    <template v-else>
+                      <span class="format-badge">{{ fmt.ext?.toUpperCase() || 'MP4' }}</span>
+                      <span class="format-resolution">{{ fmt.resolution || '未知' }}</span>
+                      <span v-if="fmt.filesize" class="format-size">
+                        {{ formatFileSize(fmt.filesize || fmt.filesize_approx) }}
+                      </span>
+                    </template>
                   </div>
                   <el-button
+                    v-if="!isMultiPart || selectedPart"
                     class="download-btn"
                     :loading="downloadingFormat === fmt.format_id"
-                    @click="handleDownload(fmt.format_id)"
+                    @click.stop="handleDownload(fmt.format_id)"
                   >
                     <el-icon><Download /></el-icon>
                     下载
                   </el-button>
+                  <el-icon v-else class="arrow-icon"><ArrowRight /></el-icon>
                 </div>
               </div>
             </template>
@@ -317,6 +350,9 @@ import {
   Platform,
   Notebook,
   Loading,
+  ArrowLeft,
+  ArrowRight,
+  InfoFilled,
 } from '@element-plus/icons-vue'
 import { videoApi } from './api/video'
 
@@ -510,6 +546,8 @@ const displayFormats = computed(() => {
     .filter(f => {
       const hasVideo = f.vcodec && f.vcodec !== 'none'
       const hasAudio = f.acodec && f.acodec !== 'none'
+      // 过滤掉纯音频格式（用户不需要单独下载音频）
+      if (!hasVideo && hasAudio) return false
       return hasVideo || hasAudio
     })
     .sort((a, b) => {
@@ -524,6 +562,55 @@ const displayFormats = computed(() => {
     })
   
   return validFormats.slice(0, 15)
+})
+
+// 是否是B站多P视频
+const isMultiPart = computed(() => {
+  if (!videoInfo.value?.formats) return false
+  // 检查是否有 p1, p2, p3 格式的 format_id
+  return videoInfo.value.formats.some(f => f.format_id?.match(/^p\d+$/))
+})
+
+// 多P视频的分P列表
+const multiPartList = computed(() => {
+  if (!videoInfo.value?.formats) return []
+  return videoInfo.value.formats
+    .filter(f => f.format_id?.match(/^p\d+$/))
+    .sort((a, b) => {
+      const numA = parseInt(a.format_id.slice(1))
+      const numB = parseInt(b.format_id.slice(1))
+      return numA - numB
+    })
+})
+
+// 当前选中的分P
+const selectedPart = ref(null)
+
+// 选中分P后显示的格式列表（非多P格式）
+const partFormats = computed(() => {
+  if (!isMultiPart.value || !selectedPart.value) return []
+  
+  // 对于多P视频，显示非 p\d+ 格式的格式列表（清晰度选择）
+  return videoInfo.value.formats
+    .filter(f => !f.format_id?.match(/^p\d+$/))
+    .filter(f => {
+      const hasVideo = f.vcodec && f.vcodec !== 'none'
+      return hasVideo
+    })
+    .slice(0, 5)
+})
+
+// 显示的格式列表（根据是否是B站多P视频）
+const formatList = computed(() => {
+  if (isMultiPart.value) {
+    if (selectedPart.value) {
+      // 已选择分P，显示清晰度选择
+      return partFormats.value
+    }
+    // 未选择分P，显示分P列表
+    return multiPartList.value
+  }
+  return displayFormats.value
 })
 
 // ==================== 解析视频 ====================
@@ -597,6 +684,12 @@ const handleParse = createThrottle(async () => {
 
 // ==================== 下载视频 ====================
 
+// 选择分P
+function selectPart(fmt) {
+  selectedPart.value = fmt
+  ElMessage.info(`已选择 ${fmt.quality}`)
+}
+
 /**
  * 下载视频（带节流）
  */
@@ -607,9 +700,25 @@ const handleDownload = createThrottle(async (formatId) => {
   
   downloadingFormat.value = formatId
   
+  // B站多P视频：组合 format_id
+  let actualFormatId = formatId
+  let actualUrl = url.value
+  
+  if (isMultiPart.value && selectedPart.value) {
+    // 使用选中的分P format_id
+    actualFormatId = selectedPart.value.format_id
+    // 如果 URL 已有参数，追加 p 参数
+    const pIndex = selectedPart.value.format_id.slice(1)
+    if (actualUrl.includes('?')) {
+      actualUrl = actualUrl.replace(/[?&]p=\d+/, '') + `&p=${pIndex}`
+    } else {
+      actualUrl = actualUrl + `?p=${pIndex}`
+    }
+  }
+  
   // 先尝试获取直链
   try {
-    const directRes = await videoApi.getDirectUrl(url.value, formatId)
+    const directRes = await videoApi.getDirectUrl(actualUrl, actualFormatId)
     
     if (directRes.success && directRes.direct_url && !directRes.needs_server) {
       ElMessage.success('获取直链成功，开始下载...')

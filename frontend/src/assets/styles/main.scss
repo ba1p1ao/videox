@@ -1225,3 +1225,74 @@ body {
     }
   }
 }
+
+// B站多P视频样式
+.multi-part-hint {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 16px;
+  background: rgba(59, 130, 246, 0.1);
+  border: 1px solid rgba(59, 130, 246, 0.2);
+  border-radius: 10px;
+  color: #60a5fa;
+  font-size: 0.9rem;
+  margin-bottom: 20px;
+  
+  .el-icon {
+    font-size: 1.1rem;
+  }
+}
+
+.selected-part-info {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 16px;
+  padding: 12px 16px;
+  background: rgba(99, 102, 241, 0.1);
+  border-radius: 10px;
+  
+  .part-label {
+    color: $text-secondary;
+    font-size: 0.875rem;
+  }
+}
+
+.format-item.part-item {
+  cursor: pointer;
+  
+  .format-info {
+    flex: 1;
+    
+    .part-number {
+      background: linear-gradient(135deg, #3b82f6, #06b6d4);
+      color: #fff;
+      padding: 4px 12px;
+      border-radius: 6px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      min-width: 40px;
+      text-align: center;
+    }
+    
+    .part-title {
+      color: $text-primary;
+      font-size: 0.9rem;
+      flex: 1;
+    }
+  }
+  
+  .arrow-icon {
+    color: $text-muted;
+    font-size: 1.2rem;
+    transition: transform 0.2s ease;
+  }
+  
+  &:hover {
+    .arrow-icon {
+      transform: translateX(4px);
+      color: #a5b4fc;
+    }
+  }
+}
