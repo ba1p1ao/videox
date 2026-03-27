@@ -394,7 +394,7 @@ class BilibiliDownloader(YtdlpDownloader):
                 
                 quality_str = f"P{part_num} {part_title}"
                 if part_duration:
-                    mins, secs = divmod(part_duration, 60)
+                    mins, secs = divmod(int(part_duration), 60)
                     quality_str += f" ({mins}:{secs:02d})"
                 if best_resolution:
                     quality_str += f" [{best_resolution}]"
