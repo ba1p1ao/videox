@@ -716,8 +716,6 @@ async function selectPart(fmt) {
   partVideoInfo.value = null
   loadingPartFormats.value = true
   
-  ElMessage.info(`正在获取 ${fmt.quality} 的清晰度选项...`)
-  
   try {
     // 从 format_id 中提取分P索引 (p1 -> 1, p2 -> 2, ...)
     const partIndex = parseInt(fmt.format_id.slice(1))
@@ -727,7 +725,6 @@ async function selectPart(fmt) {
     
     if (res.success && res.video_info) {
       partVideoInfo.value = res.video_info
-      ElMessage.success(`已加载 ${fmt.quality} 的清晰度选项`)
     } else {
       ElMessage.error(res.message || '获取清晰度失败')
     }
