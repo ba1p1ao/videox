@@ -216,6 +216,13 @@ class HealthCheckResponse(BaseModel):
 # 限流由 apply_rate_limit 函数处理
 
 
+class ParsePartRequest(BaseModel):
+    """分P解析请求"""
+    url: str = Field(..., description="视频URL")
+    part_index: int = Field(..., description="分P索引，从1开始")
+    cookies: Optional[str] = Field(None, description="Cookie字符串")
+
+
 @router.post("/parse", response_model=ParseResponse)
 async def parse_video(
     request: Request, 
@@ -275,6 +282,63 @@ async def parse_video(
         return ParseResponse(
             success=False,
             message=f"解析失败: {error_msg}",
+            video_info=None,
+        )
+
+
+@router.post("/parse/part", response_model=ParseResponse)
+async def parse_video_part(
+    request: Request, 
+    body: ParsePartRequest,
+    _: bool = Depends(verify_api_key)
+):
+    """
+    解析多P视频指定分P的清晰度信息
+    
+    用于B站等多P视频，在用户选择分P后获取该分P的可用清晰度选项
+    """
+    apply_rate_limit(request)
+    
+    try:
+        logger.info(f"解析分P视频: {body.url[:80]}..., part={body.part_index}")
+        
+        # 构建带分P参数的URL
+        base_url = body.url.split('?')[0]
+        part_url = f"{base_url}?p={body.part_index}"
+        
+        # 初始化缓存
+        await cache.init()
+        
+        # 检查缓存（使用带分P参数的URL作为key）
+        cached_result = await cache.get_parse_result(part_url)
+        if cached_result:
+            logger.info(f"分P缓存命中: {part_url[:50]}...")
+            return ParseResponse(
+                success=True,
+                message="解析成功（缓存）",
+                video_info=VideoInfo(**cached_result) if cached_result else None,
+            )
+        
+        # 执行解析（解析指定分P）
+        video_info = await downloader.parse_video_info(part_url, cookies=body.cookies)
+        
+        # 缓存结果
+        if video_info:
+            await cache.set_parse_result(part_url, video_info.model_dump())
+        
+        return ParseResponse(
+            success=True,
+            message="解析成功",
+            video_info=video_info,
+        )
+    except Exception as e:
+        error_msg = str(e) or repr(e) or "未知错误"
+        error_trace = traceback.format_exc()
+        logger.error(f"分P解析失败: {error_msg}\n{error_trace}")
+        
+        return ParseResponse(
+            success=False,
+            message=f"分P解析失败: {error_msg}",
             video_info=None,
         )
 
