@@ -480,6 +480,18 @@ server {
         proxy_read_timeout 300s;
         proxy_buffering off;
     }
+    
+    # 静态文件代理（抖音图文图片等）
+    location /static/ {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host:$server_port;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_cache_valid 200 7d;
+        expires 7d;
+        add_header Cache-Control "public, max-age=604800";
+    }
 }
 NGINX_EOF
     
