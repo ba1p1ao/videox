@@ -289,30 +289,68 @@ install_playwright() {
     # 安装系统依赖
     playwright install-deps chromium 2>/dev/null >> "$LOG_FILE" || true
     
-    # 尝试国内镜像
+    # 尝试国内镜像（带超时）
     local mirrors=(
         "https://mirrors.huaweicloud.com/playwright"
         "https://mirrors.cloud.tencent.com/playwright"
     )
     
     local installed=false
+    local timeout=120  # 超时时间（秒）
+    
     for mirror in "${mirrors[@]}"; do
-        log_info "尝试镜像: $mirror"
+        log_info "尝试镜像: $mirror (超时 ${timeout}s)"
         export PLAYWRIGHT_DOWNLOAD_HOST="$mirror"
-        if playwright install chromium >> "$LOG_FILE" 2>&1; then
+        
+        # 使用 timeout 命令限制时间
+        if timeout $timeout playwright install chromium >> "$LOG_FILE" 2>&1; then
             installed=true
             break
         fi
     done
     
-    # # 国内镜像失败则尝试官方源
-    # if [ "$installed" = false ]; then
-    #     log_info "尝试官方源..."
-    #     unset PLAYWRIGHT_DOWNLOAD_HOST
-    #     playwright install chromium >> "$LOG_FILE" 2>&1 || 
-    # fi
-    log_warn "Playwright 浏览器安装跳过, 请手动下载"
-    # log_success "Playwright 安装完成"
+    if [ "$installed" = true ]; then
+        log_success "Playwright Chromium 安装完成"
+        return
+    fi
+    
+    # 安装失败，提示手动操作
+    log_warn "Playwright 浏览器自动安装失败（网络超时或镜像不可用）"
+    log_warn "请按以下步骤手动安装："
+    echo ""
+    log "${YELLOW}========================================${NC}"
+    log "${YELLOW}  手动安装 Playwright Chromium 步骤${NC}"
+    log "${YELLOW}========================================${NC}"
+    log ""
+    log "1. 在本地电脑（有代理的环境）下载以下文件："
+    log "   https://playwright.azureedge.net/builds/chromium/1208/chrome-headless-shell-linux64.zip"
+    log ""
+    log "   或下载普通 Chrome："
+    log "   https://playwright.azureedge.net/builds/chromium/1208/chrome-linux64.zip"
+    log ""
+    log "2. 上传到服务器："
+    log "   scp chrome-headless-shell-linux64.zip root@\$(hostname -I | awk '{print \$1}'):/tmp/"
+    log ""
+    log "3. 在服务器上执行："
+    log ""
+    log "   # 如果下载的是 chrome-headless-shell-linux64.zip"
+    log "   sudo rm -rf /root/.cache/ms-playwright/chromium_headless_shell-1208"
+    log "   sudo mkdir -p /root/.cache/ms-playwright/chromium_headless_shell-1208"
+    log "   sudo unzip /tmp/chrome-headless-shell-linux64.zip -d /root/.cache/ms-playwright/chromium_headless_shell-1208/"
+    log ""
+    log "   # 如果下载的是 chrome-linux64.zip（普通 Chrome）"
+    log "   sudo rm -rf /root/.cache/ms-playwright/chromium_headless_shell-1208"
+    log "   sudo mkdir -p /root/.cache/ms-playwright/chromium_headless_shell-1208"
+    log "   sudo unzip /tmp/chrome-linux64.zip -d /root/.cache/ms-playwright/chromium_headless_shell-1208/"
+    log "   sudo mv /root/.cache/ms-playwright/chromium_headless_shell-1208/chrome-linux64 \\"
+    log "           /root/.cache/ms-playwright/chromium_headless_shell-1208/chrome-headless-shell-linux64"
+    log "   sudo ln -s /root/.cache/ms-playwright/chromium_headless_shell-1208/chrome-headless-shell-linux64/chrome \\"
+    log "              /root/.cache/ms-playwright/chromium_headless_shell-1208/chrome-headless-shell-linux64/chrome-headless-shell"
+    log ""
+    log "4. 重启服务："
+    log "   sudo systemctl restart videox-api"
+    log ""
+    log "${YELLOW}========================================${NC}"
 }
 
 # ==================== 构建前端 ====================
