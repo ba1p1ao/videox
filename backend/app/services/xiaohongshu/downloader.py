@@ -56,6 +56,84 @@ class XiaohongshuDownloader(YtdlpDownloader):
         self._executor = ThreadPoolExecutor(max_workers=3)
         self._progress_store: Dict[str, DownloadProgress] = {}
     
+    async def _download_gallery_images(self, note_id: str, images: List[Dict]) -> List[Dict]:
+        """下载图文作品图片到本地，返回本地静态文件 URL
+        
+        与抖音一样，将图片下载到本地服务器，避免：
+        1. 缓存数据过大（base64 数据）
+        2. 远程图片防盗链问题
+        3. 前端直接请求远程图片失败
+        """
+        # 图片存储目录
+        images_dir = self.download_dir / "images" / "xiaohongshu" / note_id
+        images_dir.mkdir(parents=True, exist_ok=True)
+        
+        headers = self._get_headers()
+        
+        result = []
+        skipped = 0  # 已存在的图片数量
+        
+        async with aiohttp.ClientSession() as session:
+            for idx, img in enumerate(images):
+                img_url = img.get("urlDefault") or img.get("url")
+                if not img_url:
+                    continue
+                
+                # 转换为 HTTPS
+                if img_url.startswith("http://"):
+                    img_url = "https://" + img_url[7:]
+                
+                # 获取图片尺寸
+                width = img.get("width") or img.get("liveUrl", {}).get("width")
+                height = img.get("height") or img.get("liveUrl", {}).get("height")
+                
+                # 获取文件扩展名
+                ext = ".jpg"
+                if ".png" in img_url.lower():
+                    ext = ".png"
+                elif ".webp" in img_url.lower():
+                    ext = ".webp"
+                
+                filename = f"{idx + 1:02d}{ext}"
+                filepath = images_dir / filename
+                
+                # 如果文件已存在，跳过下载
+                if filepath.exists() and filepath.stat().st_size > 0:
+                    skipped += 1
+                    result.append({
+                        "url": f"/static/images/xiaohongshu/{note_id}/{filename}",
+                        "width": width,
+                        "height": height,
+                    })
+                    logger.debug(f"图片 {idx + 1} 已存在，跳过下载")
+                    continue
+                
+                try:
+                    async with session.get(img_url, headers=headers, proxy=self.proxy, timeout=30) as response:
+                        if response.status == 200:
+                            img_data = await response.read()
+                            with open(filepath, 'wb') as f:
+                                f.write(img_data)
+                        else:
+                            logger.warning(f"下载图片 {idx + 1} 失败: HTTP {response.status}")
+                            continue
+                    
+                    result.append({
+                        "url": f"/static/images/xiaohongshu/{note_id}/{filename}",
+                        "width": width,
+                        "height": height,
+                    })
+                    logger.debug(f"已保存图片 {idx + 1}/{len(images)}: {filename}")
+                    
+                except Exception as e:
+                    logger.warning(f"保存图片 {idx + 1} 失败: {e}")
+                    continue
+        
+        if skipped > 0:
+            logger.info(f"已存在 {skipped} 张图片，新下载 {len(result) - skipped} 张")
+        logger.info(f"已保存 {len(result)}/{len(images)} 张图片到 {images_dir}")
+        return result
+    
     def _init_cookies(self) -> Dict[str, str]:
         """初始化 Cookie"""
         if self.cookies:
@@ -374,7 +452,7 @@ class XiaohongshuDownloader(YtdlpDownloader):
         try:
             # 传递原始 URL 以保留查询参数
             initial_state = await self._fetch_note_info(note_id, original_url)
-            return self._parse_initial_state(initial_state, url, note_id)
+            return await self._parse_initial_state(initial_state, url, note_id)
         except Exception as e:
             error_msg = str(e)
             if 'Cookie' in error_msg or '登录' in error_msg:
@@ -406,7 +484,7 @@ class XiaohongshuDownloader(YtdlpDownloader):
             logger.error(f"yt-dlp 解析也失败: {e}")
             raise Exception(f"小红书解析失败: {e}")
     
-    def _parse_initial_state(self, data: Dict[str, Any], original_url: str, note_id: str) -> VideoInfo:
+    async def _parse_initial_state(self, data: Dict[str, Any], original_url: str, note_id: str) -> VideoInfo:
         """解析 INITIAL_STATE 数据"""
         note_data = None
         
@@ -555,39 +633,37 @@ class XiaohongshuDownloader(YtdlpDownloader):
                             ))
                             break
         else:
-            # 图文笔记
+            # 图文笔记 - 下载图片到本地
             images = note_data.get("imageList") or note_data.get("imagesList") or []
-            for idx, img in enumerate(images):
-                img_url = img.get("urlDefault") or img.get("url")
-                if img_url:
-                    # 转换为 HTTPS
-                    if img_url.startswith("http://"):
-                        img_url = "https://" + img_url[7:]
-                    
-                    # 获取图片尺寸
-                    width = img.get("width") or img.get("liveUrl", {}).get("width")
-                    height = img.get("height") or img.get("liveUrl", {}).get("height")
-                    resolution = f"{width}x{height}" if width and height else f"图片 {idx + 1}"
-                    
-                    # 获取文件扩展名
-                    ext = "jpg"
-                    if ".png" in img_url.lower():
-                        ext = "png"
-                    elif ".webp" in img_url.lower():
-                        ext = "webp"
-                    
-                    formats.append(VideoFormat(
-                        format_id=f"image_{idx}",
-                        ext=ext,
-                        resolution=resolution,
-                        filesize=None,
-                        vcodec="none",
-                        acodec="none",
-                        quality="原图" if not (width and height) else f"原图 {width}x{height}",
-                        is_audio_only=False,
-                        is_video_only=False,
-                        url=img_url,  # 存储图片 URL
-                    ))
+            
+            # 调用 _download_gallery_images 下载图片到本地
+            local_images = await self._download_gallery_images(note_id, images)
+            
+            for idx, local_img in enumerate(local_images):
+                width = local_img.get("width")
+                height = local_img.get("height")
+                resolution = f"{width}x{height}" if width and height else f"图片 {idx + 1}"
+                
+                # 获取扩展名
+                ext = "jpg"
+                url = local_img.get("url", "")
+                if ".png" in url.lower():
+                    ext = "png"
+                elif ".webp" in url.lower():
+                    ext = "webp"
+                
+                formats.append(VideoFormat(
+                    format_id=f"image_{idx}",
+                    ext=ext,
+                    resolution=resolution,
+                    filesize=None,
+                    vcodec="none",
+                    acodec="none",
+                    quality="原图" if not (width and height) else f"原图 {width}x{height}",
+                    is_audio_only=False,
+                    is_video_only=False,
+                    url=url,  # 本地静态文件 URL
+                ))
         
         # 处理封面 URL（转 HTTPS）
         if cover and cover.startswith("http://"):
