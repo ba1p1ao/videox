@@ -508,6 +508,21 @@ class DouyinDownloader(BaseDownloader):
                 except Exception as e:
                     logger.warning(f"playwright 获取封面失败: {e}")
         
+        # 处理图文作品：下载图片到本地
+        is_gallery = aweme_detail.get("image_post_info") or aweme_detail.get("images")
+        if is_gallery and video_info.formats:
+            images = aweme_detail.get("images") or aweme_detail.get("image_post_info", {}).get("images", [])
+            if images:
+                logger.info(f"开始下载图文图片到本地: {len(images)} 张")
+                local_images = await self._download_gallery_images(aweme_id, images)
+                
+                # 更新 formats 中的 URL 为本地路径
+                for i, fmt in enumerate(video_info.formats):
+                    if i < len(local_images):
+                        fmt.url = local_images[i]["url"]
+                        if local_images[i].get("width") and local_images[i].get("height"):
+                            fmt.resolution = f"{local_images[i]['width']}x{local_images[i]['height']}"
+        
         return video_info
     
     async def _download_thumbnail_as_base64(self, thumbnail_url: str) -> Optional[str]:
@@ -535,6 +550,115 @@ class DouyinDownloader(BaseDownloader):
             logger.debug(f"下载封面异常: {e}")
         
         return None
+    
+    async def _download_gallery_images(self, aweme_id: str, images: List[Dict]) -> List[Dict]:
+        """下载图文作品图片到本地，返回本地静态文件 URL"""
+        import aiohttp
+        import base64
+        import hashlib
+        
+        # 图片存储目录
+        images_dir = self.download_dir / "images" / "douyin" / aweme_id
+        images_dir.mkdir(parents=True, exist_ok=True)
+        
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            "Referer": "https://www.douyin.com/",
+            "Accept": "image/webp,image/apng,image/*,*/*;q=0.8",
+        }
+        
+        result = []
+        
+        async with aiohttp.ClientSession() as session:
+            for idx, img in enumerate(images):
+                # 获取图片 URL
+                img_url = None
+                base64_data = None
+                
+                if isinstance(img, dict):
+                    # 优先使用已有的 base64 数据
+                    if img.get('base64'):
+                        base64_data = img['base64']
+                    else:
+                        # 从各种字段提取 URL
+                        for field in ["url_list", "urlList"]:
+                            url_list = img.get(field, [])
+                            if url_list and isinstance(url_list, list):
+                                img_url = url_list[0]
+                                break
+                        
+                        if not img_url:
+                            for field in ["display_image", "owner_watermark_image", "download_url", "url"]:
+                                field_data = img.get(field, {})
+                                if isinstance(field_data, dict):
+                                    url_list = field_data.get("url_list") or field_data.get("urlList", [])
+                                    if url_list:
+                                        img_url = url_list[0]
+                                        break
+                
+                if not img_url and not base64_data:
+                    continue
+                
+                # 生成文件名
+                ext = ".jpg"
+                if img_url:
+                    if ".png" in img_url.lower():
+                        ext = ".png"
+                    elif ".webp" in img_url.lower():
+                        ext = ".webp"
+                
+                filename = f"{idx + 1:02d}{ext}"
+                filepath = images_dir / filename
+                
+                try:
+                    # 下载或保存图片
+                    if base64_data:
+                        # 从 base64 解码
+                        if base64_data.startswith('data:'):
+                            # 解析 data URL
+                            header, data = base64_data.split(',', 1)
+                            if 'png' in header:
+                                ext = '.png'
+                                filename = f"{idx + 1:02d}{ext}"
+                                filepath = images_dir / filename
+                            elif 'webp' in header:
+                                ext = '.webp'
+                                filename = f"{idx + 1:02d}{ext}"
+                                filepath = images_dir / filename
+                            img_data = base64.b64decode(data)
+                        else:
+                            img_data = base64.b64decode(base64_data)
+                        
+                        with open(filepath, 'wb') as f:
+                            f.write(img_data)
+                    else:
+                        # 从 URL 下载
+                        async with session.get(img_url, headers=headers, proxy=self.proxy, timeout=30) as response:
+                            if response.status == 200:
+                                img_data = await response.read()
+                                with open(filepath, 'wb') as f:
+                                    f.write(img_data)
+                            else:
+                                logger.warning(f"下载图片 {idx + 1} 失败: HTTP {response.status}")
+                                continue
+                    
+                    # 获取尺寸
+                    width = img.get("width") if isinstance(img, dict) else None
+                    height = img.get("height") if isinstance(img, dict) else None
+                    
+                    result.append({
+                        "url": f"/static/images/douyin/{aweme_id}/{filename}",
+                        "width": width,
+                        "height": height,
+                    })
+                    logger.debug(f"已保存图片 {idx + 1}/{len(images)}: {filename}")
+                    
+                except Exception as e:
+                    logger.warning(f"保存图片 {idx + 1} 失败: {e}")
+                    continue
+        
+        logger.info(f"已保存 {len(result)}/{len(images)} 张图片到 {images_dir}")
+        return result
     
     async def _parse_from_web(self, url: str, aweme_id: str) -> Optional[Dict[str, Any]]:
         """从网页解析抖音内容（API 失败时的备用方案）"""

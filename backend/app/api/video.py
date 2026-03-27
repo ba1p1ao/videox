@@ -249,16 +249,9 @@ async def parse_video(
         # 执行解析
         video_info = await downloader.parse_video_info(body.url, cookies=body.cookies)
         
-        # 缓存结果（抖音图文作品不缓存，因为包含 base64 图片数据）
+        # 缓存结果
         if video_info:
-            is_douyin_gallery = (
-                video_info.platform == "douyin" and 
-                video_info.duration == 0 and 
-                len(video_info.formats) > 0 and
-                video_info.formats[0].format_id.startswith("image_")
-            )
-            if not is_douyin_gallery:
-                await cache.set_parse_result(body.url, video_info.model_dump())
+            await cache.set_parse_result(body.url, video_info.model_dump())
         
         return ParseResponse(
             success=True,

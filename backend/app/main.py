@@ -15,6 +15,7 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
+from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 from loguru import logger
 import sys
@@ -181,6 +182,12 @@ app.add_middleware(
     allow_methods=settings.CORS_ALLOW_METHODS,
     allow_headers=settings.CORS_ALLOW_HEADERS,
 )
+
+# 静态文件服务（用于抖音图文图片）
+import pathlib
+_images_dir = pathlib.Path(settings.DOWNLOAD_DIR) / "images"
+_images_dir.mkdir(parents=True, exist_ok=True)
+app.mount("/static/images", StaticFiles(directory=str(_images_dir)), name="images")
 
 
 # ==================== 全局异常处理器 ====================
