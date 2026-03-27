@@ -1,6 +1,7 @@
 """
 Bilibili 视频下载器
 基于 yt-dlp 实现 B站视频下载
+支持多P视频选集
 """
 import os
 import re
@@ -23,7 +24,7 @@ class BilibiliDownloader(YtdlpDownloader):
     
     功能：
     - 支持普通视频、番剧、影视下载
-    - 支持多 P 视频下载
+    - 支持多P视频选集解析和下载
     - 自动选择最佳画质
     - 支持 Cookie 登录（获取更高画质）
     - 自动合并音视频流
@@ -83,24 +84,30 @@ class BilibiliDownloader(YtdlpDownloader):
         filename = filename.strip(' .')
         return filename
     
-    def _build_expected_filename_pattern(self, video_title: str, video_id: str) -> str:
+    def _build_expected_filename_pattern(self, video_title: str, video_id: str, p_index: Optional[int] = None) -> str:
         """构建预期的文件名模式
         
-        文件名格式：{title}_{id}.{ext}
-        注意：B站ID已经包含BV前缀，如 BV1DVAgzNEcs
+        多P视频文件名格式：{title} p{index} {part_title}_{id}_p{index}.{ext}
+        单视频文件名格式：{title}_{id}.{ext}
         """
         clean_title = self._sanitize_filename(video_title, max_length=80)
-        # 构建 glob 模式
-        return f"{clean_title}_{video_id}.*"
+        
+        if p_index is not None:
+            # 多P视频
+            return f"*_{video_id}_p{p_index}.*"
+        else:
+            # 单视频
+            return f"{clean_title}_{video_id}.*"
     
     def _build_bilibili_options(self, download: bool = False, format_id: Optional[str] = None,
                                 quality: str = "best", audio_only: bool = False,
                                 task_id: Optional[str] = None,
-                                need_audio: bool = False) -> Dict[str, Any]:
+                                need_audio: bool = False,
+                                playlist_items: Optional[str] = None) -> Dict[str, Any]:
         """构建 B站专用 yt-dlp 配置
         
         Args:
-            need_audio: 当选择的格式是纯视频流时，是否需要自动添加音频流
+            playlist_items: 指定下载的播放列表项，如 "1" 或 "2,3"
         """
         options = {
             "quiet": True,
@@ -114,37 +121,31 @@ class BilibiliDownloader(YtdlpDownloader):
         if self.proxy:
             options["proxy"] = self.proxy
 
-        # B站专用 Headers（更完整，绕过 WAF）
+        # B站专用 Headers
         options["http_headers"] = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
             "Referer": "https://www.bilibili.com",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
             "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-            "Accept-Encoding": "gzip, deflate, br",
-            "Connection": "keep-alive",
-            "Sec-Fetch-Dest": "document",
-            "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-Site": "none",
-            "Sec-Fetch-User": "?1",
-            "Cache-Control": "max-age=0",
-            "sec-ch-ua": '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
-            "sec-ch-ua-mobile": "?0",
-            "sec-ch-ua-platform": '"Windows"',
         }
 
-        # Cookie 支持（B站需要登录才能获取 1080p+）
+        # Cookie 支持
         if self.cookies:
-            # Cookie 字符串，转换为 Netscape 格式
             cookie_content = self._convert_cookie_to_netscape(self.cookies, ".bilibili.com")
             cookie_file = tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False)
             cookie_file.write(cookie_content)
             cookie_file.close()
             options["cookiefile"] = cookie_file.name
 
-        # 输出模板（B站ID已包含BV前缀，所以不需要额外添加）
+        # 输出模板
         options["outtmpl"] = {
             "default": str(self.download_dir / "%(title).80s_%(id)s.%(ext)s"),
         }
+
+        # 播放列表项选择（用于多P视频）
+        if playlist_items:
+            options["playlist_items"] = playlist_items
+            logger.info(f"只下载播放列表项: {playlist_items}")
 
         # 格式选择
         if audio_only:
@@ -155,16 +156,10 @@ class BilibiliDownloader(YtdlpDownloader):
                 "preferredquality": "192",
             }]
         elif format_id:
-            # 指定了格式ID，使用回退策略
-            # 优先使用指定格式，如果不可用则回退到最佳格式
             if need_audio:
-                # 纯视频格式，自动添加最佳音频流
                 options["format"] = f"{format_id}+bestaudio/bestvideo+bestaudio/best"
-                logger.info(f"使用格式: {format_id}+bestaudio（自动添加音频流，带回退）")
             else:
-                # 格式已包含音频或是纯音频，带回退
                 options["format"] = f"{format_id}/bestvideo+bestaudio/best"
-                logger.info(f"使用格式: {format_id}（带回退到最佳格式）")
         else:
             format_map = {
                 "best": "bestvideo+bestaudio/best",
@@ -185,10 +180,15 @@ class BilibiliDownloader(YtdlpDownloader):
         return options
     
     async def parse_video_info(self, url: str, **kwargs) -> VideoInfo:
-        """解析 B站视频信息"""
+        """解析 B站视频信息，支持多P视频"""
         # 处理 b23.tv 短链接
         if 'b23.tv' in url:
             url = self.resolve_short_url(url)
+        
+        # 提取 URL 中的分P参数
+        parsed_p = self._extract_p_index(url)
+        if parsed_p:
+            logger.info(f"URL 指定分P: {parsed_p}")
         
         options = self._build_bilibili_options(download=False)
         
@@ -206,63 +206,59 @@ class BilibiliDownloader(YtdlpDownloader):
         
         return self.raw_to_video_info(raw_info, url, Platform.BILIBILI)
     
+    def _extract_p_index(self, url: str) -> Optional[int]:
+        """从 URL 提取分P索引"""
+        # ?p=1 或 ?p=2
+        match = re.search(r'[?&]p=(\d+)', url)
+        if match:
+            return int(match.group(1))
+        return None
+    
     async def download_video(self, url: str, quality: str = "best", 
                              format_id: Optional[str] = None,
                              audio_only: bool = False,
                              video_title: Optional[str] = None,
                              video_id: Optional[str] = None,
                              **kwargs) -> str:
-        """下载 B站视频
-        
-        自动检测并处理音视频分离的情况：
-        - 如果选择的格式是纯视频流（无音频），自动添加最佳音频流进行合并
-        - 确保下载的视频始终包含音频
-        
-        Args:
-            video_title: 视频标题（用于精确匹配下载文件）
-            video_id: 视频ID（用于精确匹配下载文件）
-        """
+        """下载 B站视频，支持多P视频选择下载"""
         # 处理 b23.tv 短链接
         if 'b23.tv' in url:
             url = self.resolve_short_url(url)
         
+        # 提取 URL 中的分P参数或从 format_id 解析
+        playlist_items = None
+        p_index = self._extract_p_index(url)
+        
+        # 如果 format_id 是 p1, p2, p3 格式，提取分P索引
+        if format_id and format_id.startswith('p') and format_id[1:].isdigit():
+            p_index = int(format_id[1:])
+            format_id = None  # 清除 format_id，使用默认格式
+        
+        if p_index:
+            playlist_items = str(p_index)
+            logger.info(f"将下载第 {p_index} 个分P")
+        
         task_id = f"bili_{os.urandom(4).hex()}"
         self._progress_store[task_id] = DownloadProgress(task_id)
         
-        # 构建预期文件名模式（如果提供了标题和ID）
-        expected_pattern = None
-        if video_title and video_id:
-            expected_pattern = self._build_expected_filename_pattern(video_title, video_id)
-            logger.info(f"预期文件名模式: {expected_pattern}")
-        
-        # 检查指定格式是否需要添加音频流
+        # 检查是否需要添加音频流
         need_audio = False
         if format_id and not audio_only:
-            # 先解析视频信息，获取格式详情
             try:
                 video_info = await self.parse_video_info(url)
-                # 如果没有提供 video_id，从解析结果中获取
                 if not video_id:
                     video_id = video_info.id
-                    if video_id:
-                        expected_pattern = self._build_expected_filename_pattern(
-                            video_title or video_info.title, video_id
-                        )
-                        logger.info(f"从解析结果获取ID，预期文件名模式: {expected_pattern}")
                 
                 for fmt in video_info.formats:
                     if fmt.format_id == format_id:
-                        # 检查是否是纯视频流（有视频无音频）
                         vcodec = fmt.vcodec or "none"
                         acodec = fmt.acodec or "none"
-                        has_video = vcodec != "none"
-                        has_audio = acodec != "none"
-                        if has_video and not has_audio:
+                        if vcodec != "none" and acodec == "none":
                             need_audio = True
-                            logger.info(f"格式 {format_id} 是纯视频流，将自动添加音频流进行合并")
+                            logger.info(f"格式 {format_id} 是纯视频流，将自动添加音频流")
                         break
             except Exception as e:
-                logger.warning(f"解析格式信息失败，使用默认格式选择: {e}")
+                logger.warning(f"解析格式信息失败: {e}")
         
         options = self._build_bilibili_options(
             download=True,
@@ -271,6 +267,7 @@ class BilibiliDownloader(YtdlpDownloader):
             audio_only=audio_only,
             task_id=task_id,
             need_audio=need_audio,
+            playlist_items=playlist_items,
         )
         
         logger.info(f"开始下载 B站视频: {url}")
@@ -298,44 +295,56 @@ class BilibiliDownloader(YtdlpDownloader):
                     return str(filepath)
                 logger.info(f"进度回调文件不存在: {filepath}")
             
-            # 方法2：通过预期文件名模式匹配
-            if expected_pattern:
-                matched_files = list(self.download_dir.glob(expected_pattern))
-                logger.info(f"模式 {expected_pattern} 匹配到 {len(matched_files)} 个文件")
-                if matched_files:
-                    # 选择最大的文件（合并后的最终文件）
-                    matched_files.sort(key=lambda x: x.stat().st_size, reverse=True)
-                    logger.info(f"B站视频下载完成（通过文件名模式匹配）: {matched_files[0].name}")
-                    return str(matched_files[0])
-            
-            # 方法3：通过 URL 中的 BV 号匹配（包括合并后的文件）
+            # 方法2：通过 BV 号和分P索引匹配
             bv_match = re.search(r'(BV[a-zA-Z0-9]+)', url)
             if bv_match:
                 bv_id = bv_match.group(1)
-                # 匹配 *_BV{bv_id}*.mp4 或 *.mkv 等（排除 .f 数字 的临时文件）
-                all_files = list(self.download_dir.glob(f"*_BV{bv_id}*"))
-                logger.info(f"BV号匹配到 {len(all_files)} 个文件: {[f.name for f in all_files]}")
                 
-                # 过滤出最终文件（不含 .f 数字的文件，这些是合并后的文件）
-                final_files = [f for f in all_files if not re.search(r'\.f\d+\.', f.name)]
+                # 构建搜索模式
+                if p_index:
+                    # 多P视频，搜索特定分P
+                    search_pattern = f"*_p{p_index}.*" if p_index else f"*_BV{bv_id}*"
+                else:
+                    search_pattern = f"*_{bv_id}*"
+                
+                all_files = list(self.download_dir.glob(search_pattern))
+                logger.info(f"搜索模式 {search_pattern} 匹配到 {len(all_files)} 个文件")
+                
+                # 过滤出最终文件（不含 .f 数字的临时文件）
+                final_files = [f for f in all_files if not re.search(r'\.f\d+\.', f.name) and f.suffix in ['.mp4', '.mkv', '.webm']]
+                
                 if final_files:
+                    # 如果是多P视频，选择对应的分P
+                    if p_index:
+                        p_pattern = f"_p{p_index}."
+                        p_files = [f for f in final_files if p_pattern in f.name]
+                        if p_files:
+                            p_files.sort(key=lambda x: x.stat().st_size, reverse=True)
+                            logger.info(f"B站视频下载完成（分P {p_index}）: {p_files[0].name}")
+                            return str(p_files[0])
+                    
                     final_files.sort(key=lambda x: x.stat().st_size, reverse=True)
-                    logger.info(f"B站视频下载完成（通过BV号匹配最终文件）: {final_files[0].name}")
+                    logger.info(f"B站视频下载完成: {final_files[0].name}")
                     return str(final_files[0])
                 
-                # 如果没有合并后的文件，返回最大的文件
+                # 返回最大的文件
                 if all_files:
-                    all_files.sort(key=lambda x: x.stat().st_size, reverse=True)
-                    logger.info(f"B站视频下载完成（返回最大文件）: {all_files[0].name}")
-                    return str(all_files[0])
+                    mp4_files = [f for f in all_files if f.suffix == '.mp4']
+                    if mp4_files:
+                        mp4_files.sort(key=lambda x: x.stat().st_size, reverse=True)
+                        logger.info(f"B站视频下载完成: {mp4_files[0].name}")
+                        return str(mp4_files[0])
             
-            # 方法4：列出所有最近下载的文件
+            # 方法3：列出最近下载的文件
             recent_files = sorted(
-                self.download_dir.glob("*"),
+                [f for f in self.download_dir.glob("*.mp4")],
                 key=lambda x: x.stat().st_mtime,
                 reverse=True
             )[:5]
             logger.info(f"最近下载的文件: {[f.name for f in recent_files]}")
+            
+            if recent_files:
+                return str(recent_files[0])
             
             raise Exception("无法找到下载的文件")
         
@@ -346,18 +355,95 @@ class BilibiliDownloader(YtdlpDownloader):
                 os.unlink(options["cookiefile"])
     
     def raw_to_video_info(self, raw_info: Dict[str, Any], url: str, platform: Platform) -> VideoInfo:
-        """将 yt-dlp 返回的原始信息转换为 VideoInfo（B站专用）"""
-        formats = []
+        """将 yt-dlp 返回的原始信息转换为 VideoInfo（B站专用）
         
+        支持多P视频选集：
+        - 如果是多P视频，entries 字段包含所有分P信息
+        - 将分P信息转换为 formats，让用户选择下载哪个
+        """
+        formats = []
+        entries = raw_info.get("entries", [])
+        
+        # 检测是否是多P视频
+        if entries and len(entries) > 0:
+            is_multi_part = len(entries) > 1
+            if is_multi_part:
+                logger.info(f"检测到多P视频，共 {len(entries)} 个分P")
+            
+            # 多P视频：将每个分P作为一个"格式"选项
+            for idx, entry in enumerate(entries):
+                part_num = idx + 1
+                part_title = entry.get("title", f"第{part_num}P")
+                part_duration = entry.get("duration", 0)
+                
+                # 获取该分P的最佳格式信息
+                entry_formats = entry.get("formats", [])
+                best_resolution = None
+                best_filesize = None
+                
+                if entry_formats:
+                    # 找最佳格式
+                    for fmt in entry_formats:
+                        if fmt.get("vcodec") != "none":
+                            height = fmt.get("height")
+                            if height:
+                                if best_resolution is None or height > int(best_resolution.split('x')[1] if 'x' in str(best_resolution) else 0):
+                                    best_resolution = f"{fmt.get('width', 0)}x{height}"
+                                    best_filesize = fmt.get("filesize") or fmt.get("filesize_approx")
+                            break
+                
+                quality_str = f"P{part_num} {part_title}"
+                if part_duration:
+                    mins, secs = divmod(part_duration, 60)
+                    quality_str += f" ({mins}:{secs:02d})"
+                if best_resolution:
+                    quality_str += f" [{best_resolution}]"
+                
+                formats.append(VideoFormat(
+                    format_id=f"p{part_num}",
+                    ext="mp4",
+                    resolution=best_resolution,
+                    filesize=best_filesize,
+                    vcodec="h264",
+                    acodec="aac",
+                    quality=quality_str,
+                    is_audio_only=False,
+                    is_video_only=False,
+                    url=f"?p={part_num}",  # 用于标识分P
+                ))
+            
+            # 处理封面 URL
+            thumbnail = raw_info.get("thumbnail") or (entries[0].get("thumbnail") if entries else None)
+            if thumbnail and thumbnail.startswith("http://"):
+                thumbnail = "https://" + thumbnail[7:]
+            
+            # 计算总时长
+            total_duration = sum(e.get("duration", 0) for e in entries)
+            
+            return VideoInfo(
+                id=str(raw_info.get("id") or entries[0].get("id", "")),
+                title=raw_info.get("title", entries[0].get("title", "未知标题") if entries else "未知标题"),
+                description=raw_info.get("description"),
+                thumbnail=thumbnail,
+                duration=total_duration if is_multi_part else (entries[0].get("duration") if entries else 0),
+                uploader=raw_info.get("uploader") or raw_info.get("channel") or (entries[0].get("uploader") if entries else None),
+                uploader_id=raw_info.get("uploader_id") or (entries[0].get("uploader_id") if entries else None),
+                upload_date=raw_info.get("upload_date") or (entries[0].get("upload_date") if entries else None),
+                view_count=raw_info.get("view_count"),
+                like_count=raw_info.get("like_count"),
+                comment_count=raw_info.get("comment_count"),
+                platform=platform,
+                original_url=url,
+                formats=formats,
+                best_format=formats[0] if formats else None,
+            )
+        
+        # 单视频处理
         for fmt in raw_info.get("formats", []):
-            # 跳过无效格式
             if fmt.get("vcodec") == "none" and fmt.get("acodec") == "none":
                 continue
             
-            # B站格式处理：文件大小可能使用 filesize_approx
             filesize = fmt.get("filesize") or fmt.get("filesize_approx")
-            
-            # 判断是否为纯音频/纯视频
             is_audio_only = fmt.get("vcodec") == "none"
             is_video_only = fmt.get("acodec") == "none"
             
@@ -386,17 +472,15 @@ class BilibiliDownloader(YtdlpDownloader):
         
         formats.sort(key=get_height, reverse=True)
         
-        # 最佳格式
         best_format = formats[0] if formats else None
         
-        # 从 formats 中提取信息
         if raw_info.get("format_id"):
             best_format = next(
                 (f for f in formats if f.format_id == raw_info["format_id"]),
                 best_format
             )
         
-        # 处理封面 URL（将 HTTP 转换为 HTTPS，避免混合内容问题）
+        # 处理封面 URL
         thumbnail = raw_info.get("thumbnail")
         if thumbnail and thumbnail.startswith("http://"):
             thumbnail = "https://" + thumbnail[7:]
