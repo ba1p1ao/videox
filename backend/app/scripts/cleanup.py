@@ -1,44 +1,78 @@
 """
 下载文件清理脚本
-支持在项目启动时自动清理过期文件
+支持在项目启动时自动清理过期文件，同步清理 Redis 缓存
+
+清理策略：
+1. 扫描本地图片目录，获取所有已下载的文件
+2. 检查 Redis 缓存，找出哪些文件没有对应的缓存（缓存已过期）
+3. 删除无缓存关联的本地文件
+4. 清理空目录
 """
 import os
-import shutil
+import json
 import time
+import asyncio
+import hashlib
 from pathlib import Path
 from datetime import datetime, timedelta
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, Set, Dict
 from loguru import logger
 
 
 class DownloadCleaner:
     """下载文件清理器
     
-    功能：
-    1. 清理超过指定天数的下载文件
-    2. 清理超过指定大小的下载目录
-    3. 清理空目录
-    4. 保留最近 N 天的文件
+    与 Redis 缓存同步：
+    - 当 Redis 缓存过期后，自动删除对应的本地文件
+    - 避免本地文件无限增长
     """
+    
+    # Redis 缓存 key 前缀
+    CACHE_KEY_PREFIX = "video:parse:"
     
     def __init__(
         self,
         download_dir: str = "downloads",
-        max_age_days: int = 1,
         max_size_mb: int = 5000,
-        clean_on_startup: bool = True,
+        redis_url: Optional[str] = None,
+        cache_expire_hours: int = 1,
     ):
         """
         Args:
             download_dir: 下载目录路径
-            max_age_days: 文件最大保留天数（超过此天数的文件将被删除）
-            max_size_mb: 目录最大大小 MB（超过此大小将删除最旧的文件）
-            clean_on_startup: 是否在启动时执行清理
+            max_size_mb: 目录最大大小 MB（超过此大小将强制清理最旧文件）
+            redis_url: Redis 连接 URL
+            cache_expire_hours: 缓存过期时间（小时），用于判断文件是否应该保留
         """
         self.download_dir = Path(download_dir)
-        self.max_age_days = max_age_days
         self.max_size_mb = max_size_mb
-        self.clean_on_startup = clean_on_startup
+        self.redis_url = redis_url
+        self.cache_expire_hours = cache_expire_hours
+        self._redis_client = None
+    
+    async def _get_redis_client(self):
+        """获取 Redis 客户端"""
+        if self._redis_client is None and self.redis_url:
+            try:
+                import redis.asyncio as redis
+                self._redis_client = redis.from_url(
+                    self.redis_url,
+                    encoding="utf-8",
+                    decode_responses=True,
+                )
+            except ImportError:
+                logger.warning("Redis 库未安装，将只按文件时间清理")
+                return None
+            except Exception as e:
+                logger.warning(f"Redis 连接失败: {e}")
+                return None
+        return self._redis_client
+    
+    async def close_redis(self):
+        """关闭 Redis 连接"""
+        if self._redis_client:
+            await self._redis_client.aclose()
+            self._redis_client = None
     
     def get_dir_size(self) -> int:
         """获取目录总大小（字节）"""
@@ -53,48 +87,157 @@ class DownloadCleaner:
             logger.warning(f"计算目录大小失败: {e}")
         return total_size
     
-    def get_all_files(self) -> List[Tuple[Path, float, int]]:
-        """获取所有文件及其修改时间和大小
+    def get_local_image_dirs(self) -> List[Tuple[Path, str, float]]:
+        """获取所有本地图片目录
         
         Returns:
-            List of (filepath, mtime, size)
+            List of (dir_path, content_id, mtime)
+            content_id: 视频/笔记 ID（如 douyin/123456 -> 123456）
         """
-        files = []
-        try:
-            for root, dirs, filenames in os.walk(self.download_dir):
-                for f in filenames:
-                    fp = Path(root) / f
-                    try:
-                        stat = fp.stat()
-                        files.append((fp, stat.st_mtime, stat.st_size))
-                    except Exception:
-                        pass
-        except Exception as e:
-            logger.warning(f"遍历文件失败: {e}")
-        return files
+        images_dir = self.download_dir / "images"
+        if not images_dir.exists():
+            return []
+        
+        result = []
+        
+        # 遍历平台目录
+        for platform_dir in images_dir.iterdir():
+            if not platform_dir.is_dir():
+                continue
+            
+            platform = platform_dir.name  # douyin, xiaohongshu 等
+            
+            # 遍历内容 ID 目录
+            for content_dir in platform_dir.iterdir():
+                if not content_dir.is_dir():
+                    continue
+                
+                content_id = content_dir.name
+                try:
+                    # 使用目录的修改时间
+                    mtime = content_dir.stat().st_mtime
+                    result.append((content_dir, f"{platform}/{content_id}", mtime))
+                except Exception:
+                    pass
+        
+        return result
     
-    def clean_by_age(self) -> Tuple[int, int]:
-        """按时间清理过期文件
+    async def get_cached_content_ids(self) -> Set[str]:
+        """从 Redis 缓存中获取所有内容 ID
+        
+        缓存数据中 original_url 包含内容 ID，例如：
+        - https://www.xiaohongshu.com/discovery/item/69be604a000000001a033053
+        - https://www.douyin.com/video/123456789
         
         Returns:
-            (删除文件数, 释放空间 bytes)
+            Set of "platform/content_id" strings
         """
-        if not self.download_dir.exists():
+        redis_client = await self._get_redis_client()
+        if not redis_client:
+            return set()
+        
+        cached_ids = set()
+        
+        try:
+            cursor = 0
+            while True:
+                cursor, keys = await redis_client.scan(
+                    cursor=cursor,
+                    match=f"{self.CACHE_KEY_PREFIX}*",
+                    count=100
+                )
+                
+                for key in keys:
+                    try:
+                        cache_value = await redis_client.get(key)
+                        if not cache_value:
+                            continue
+                        
+                        cache_data = json.loads(cache_value)
+                        platform = cache_data.get("platform", "")
+                        original_url = cache_data.get("original_url", "")
+                        
+                        # 从 URL 提取内容 ID
+                        content_id = self._extract_content_id(original_url, platform)
+                        if content_id:
+                            cached_ids.add(f"{platform}/{content_id}")
+                        
+                    except Exception as e:
+                        logger.debug(f"解析缓存 {key} 失败: {e}")
+                
+                if cursor == 0:
+                    break
+                    
+        except Exception as e:
+            logger.error(f"扫描 Redis 缓存失败: {e}")
+        
+        return cached_ids
+    
+    def _extract_content_id(self, url: str, platform: str) -> Optional[str]:
+        """从 URL 提取内容 ID"""
+        import re
+        
+        if platform == "xiaohongshu":
+            # https://www.xiaohongshu.com/discovery/item/69be604a000000001a033053
+            match = re.search(r'/item/([a-zA-Z0-9]+)', url)
+            if match:
+                return match.group(1)
+            match = re.search(r'/explore/([a-zA-Z0-9]+)', url)
+            if match:
+                return match.group(1)
+        
+        elif platform == "douyin":
+            # https://www.douyin.com/video/123456789
+            match = re.search(r'/video/(\d+)', url)
+            if match:
+                return match.group(1)
+        
+        elif platform == "bilibili":
+            # https://www.bilibili.com/video/BV1xxx
+            match = re.search(r'/video/(BV[a-zA-Z0-9]+)', url)
+            if match:
+                return match.group(1)
+        
+        return None
+    
+    async def clean_orphan_files(self) -> Tuple[int, int]:
+        """清理孤儿文件（没有缓存关联的本地文件）
+        
+        Returns:
+            (删除目录数, 释放空间 bytes)
+        """
+        local_dirs = self.get_local_image_dirs()
+        
+        if not local_dirs:
             return 0, 0
         
-        cutoff_time = time.time() - (self.max_age_days * 86400)
+        # 获取所有有缓存的内容 ID
+        cached_ids = await self.get_cached_content_ids()
+        
         deleted_count = 0
         freed_bytes = 0
         
-        for fp, mtime, size in self.get_all_files():
-            if mtime < cutoff_time:
-                try:
-                    fp.unlink()
-                    deleted_count += 1
-                    freed_bytes += size
-                    logger.debug(f"删除过期文件: {fp.name} ({datetime.fromtimestamp(mtime)})")
-                except Exception as e:
-                    logger.warning(f"删除文件失败 {fp}: {e}")
+        for dir_path, content_key, mtime in local_dirs:
+            # 如果有缓存，跳过
+            if content_key in cached_ids:
+                continue
+            
+            # 没有缓存，检查是否超过缓存过期时间
+            # 给一个缓冲时间（缓存过期时间的 2 倍）
+            buffer_seconds = self.cache_expire_hours * 3600 * 2
+            if time.time() - mtime < buffer_seconds:
+                # 文件还比较新，可能缓存还没建立，跳过
+                continue
+            
+            # 删除整个目录
+            try:
+                dir_size = sum(f.stat().st_size for f in dir_path.rglob("*") if f.is_file())
+                shutil.rmtree(dir_path)
+                deleted_count += 1
+                freed_bytes += dir_size
+                logger.debug(f"删除孤儿目录: {dir_path.name} ({dir_size / 1024:.1f} KB)")
+            except Exception as e:
+                logger.warning(f"删除目录失败 {dir_path}: {e}")
         
         return deleted_count, freed_bytes
     
@@ -102,9 +245,10 @@ class DownloadCleaner:
         """按大小清理（删除最旧的文件直到目录大小低于限制）
         
         Returns:
-            (删除文件数, 释放空间 bytes)
+            (删除目录数, 释放空间 bytes)
         """
-        if not self.download_dir.exists():
+        images_dir = self.download_dir / "images"
+        if not images_dir.exists():
             return 0, 0
         
         max_size_bytes = self.max_size_mb * 1024 * 1024
@@ -113,38 +257,34 @@ class DownloadCleaner:
         if current_size <= max_size_bytes:
             return 0, 0
         
-        # 按修改时间排序（最旧的在前）
-        files = sorted(self.get_all_files(), key=lambda x: x[1])
+        # 获取所有图片目录，按修改时间排序（最旧的在前）
+        local_dirs = sorted(self.get_local_image_dirs(), key=lambda x: x[2])
         
         deleted_count = 0
         freed_bytes = 0
         
-        for fp, mtime, size in files:
+        for dir_path, content_key, mtime in local_dirs:
             if current_size - freed_bytes <= max_size_bytes:
                 break
             
             try:
-                fp.unlink()
+                dir_size = sum(f.stat().st_size for f in dir_path.rglob("*") if f.is_file())
+                shutil.rmtree(dir_path)
                 deleted_count += 1
-                freed_bytes += size
-                logger.debug(f"删除旧文件（空间限制）: {fp.name}")
+                freed_bytes += dir_size
+                logger.debug(f"删除旧目录（空间限制）: {dir_path.name}")
             except Exception as e:
-                logger.warning(f"删除文件失败 {fp}: {e}")
+                logger.warning(f"删除目录失败 {dir_path}: {e}")
         
         return deleted_count, freed_bytes
     
     def clean_empty_dirs(self) -> int:
-        """清理空目录
-        
-        Returns:
-            删除的目录数
-        """
+        """清理空目录"""
         if not self.download_dir.exists():
             return 0
         
         deleted_count = 0
         
-        # 从最深层目录开始清理
         for root, dirs, files in os.walk(self.download_dir, topdown=False):
             for d in dirs:
                 dir_path = Path(root) / d
@@ -158,7 +298,7 @@ class DownloadCleaner:
         
         return deleted_count
     
-    def cleanup(self) -> dict:
+    async def cleanup_async(self) -> dict:
         """执行完整清理
         
         Returns:
@@ -169,18 +309,24 @@ class DownloadCleaner:
         
         logger.info(f"🧹 开始清理下载目录: {self.download_dir}")
         logger.info(f"   当前大小: {initial_size / 1024 / 1024:.2f} MB")
-        logger.info(f"   保留天数: {self.max_age_days} 天")
         logger.info(f"   空间限制: {self.max_size_mb} MB")
         
-        # 1. 按时间清理
-        age_deleted, age_freed = self.clean_by_age()
-        if age_deleted > 0:
-            logger.info(f"   按时间清理: 删除 {age_deleted} 个文件, 释放 {age_freed / 1024 / 1024:.2f} MB")
+        total_dirs_deleted = 0
+        total_freed_bytes = 0
+        
+        # 1. 清理孤儿文件（没有缓存关联的）
+        orphan_deleted, orphan_freed = await self.clean_orphan_files()
+        if orphan_deleted > 0:
+            total_dirs_deleted += orphan_deleted
+            total_freed_bytes += orphan_freed
+            logger.info(f"   清理孤儿文件: 删除 {orphan_deleted} 个目录, 释放 {orphan_freed / 1024 / 1024:.2f} MB")
         
         # 2. 按大小清理
         size_deleted, size_freed = self.clean_by_size()
         if size_deleted > 0:
-            logger.info(f"   按大小清理: 删除 {size_deleted} 个文件, 释放 {size_freed / 1024 / 1024:.2f} MB")
+            total_dirs_deleted += size_deleted
+            total_freed_bytes += size_freed
+            logger.info(f"   按大小清理: 删除 {size_deleted} 个目录, 释放 {size_freed / 1024 / 1024:.2f} MB")
         
         # 3. 清理空目录
         dirs_deleted = self.clean_empty_dirs()
@@ -188,16 +334,18 @@ class DownloadCleaner:
             logger.info(f"   清理空目录: {dirs_deleted} 个")
         
         final_size = self.get_dir_size()
-        total_freed = initial_size - final_size
         elapsed = time.time() - start_time
+        
+        # 关闭 Redis 连接
+        await self.close_redis()
         
         result = {
             "success": True,
             "initial_size_mb": round(initial_size / 1024 / 1024, 2),
             "final_size_mb": round(final_size / 1024 / 1024, 2),
-            "freed_mb": round(total_freed / 1024 / 1024, 2),
-            "files_deleted": age_deleted + size_deleted,
-            "dirs_deleted": dirs_deleted,
+            "freed_mb": round(total_freed_bytes / 1024 / 1024, 2),
+            "dirs_deleted": total_dirs_deleted,
+            "empty_dirs_deleted": dirs_deleted,
             "elapsed_seconds": round(elapsed, 2),
         }
         
@@ -205,56 +353,44 @@ class DownloadCleaner:
         
         return result
     
-    def run_startup_cleanup(self):
-        """启动时执行的清理（静默模式）"""
-        if not self.clean_on_startup:
-            return
-        
-        try:
-            # 只在下载目录存在时执行
-            if not self.download_dir.exists():
-                logger.debug("下载目录不存在，跳过清理")
-                return
-            
-            # 获取当前状态
-            current_size_mb = self.get_dir_size() / 1024 / 1024
-            
-            # 如果目录不大，跳过清理
-            if current_size_mb < 100:
-                logger.debug(f"下载目录较小 ({current_size_mb:.1f} MB)，跳过清理")
-                return
-            
-            # 执行清理
-            self.cleanup()
-            
-        except Exception as e:
-            logger.warning(f"启动清理失败: {e}")
+    def cleanup(self) -> dict:
+        """执行完整清理（同步版本）"""
+        return asyncio.run(self.cleanup_async())
+
+
+# 需要导入 shutil
+import shutil
+
+
+async def run_cleanup_async(
+    download_dir: str = "downloads",
+    max_size_mb: int = 5000,
+    redis_url: Optional[str] = None,
+    cache_expire_hours: int = 1,
+) -> dict:
+    """便捷函数：执行清理（异步）"""
+    cleaner = DownloadCleaner(
+        download_dir=download_dir,
+        max_size_mb=max_size_mb,
+        redis_url=redis_url,
+        cache_expire_hours=cache_expire_hours,
+    )
+    return await cleaner.cleanup_async()
 
 
 def run_cleanup(
     download_dir: str = "downloads",
-    max_age_days: int = 7,
     max_size_mb: int = 5000,
-    clean_on_startup: bool = True,
+    redis_url: Optional[str] = None,
+    cache_expire_hours: int = 1,
 ) -> dict:
-    """便捷函数：执行清理
-    
-    Args:
-        download_dir: 下载目录路径
-        max_age_days: 文件最大保留天数
-        max_size_mb: 目录最大大小 MB
-        clean_on_startup: 是否在启动时执行清理
-    
-    Returns:
-        清理统计信息
-    """
-    cleaner = DownloadCleaner(
+    """便捷函数：执行清理（同步）"""
+    return asyncio.run(run_cleanup_async(
         download_dir=download_dir,
-        max_age_days=max_age_days,
         max_size_mb=max_size_mb,
-        clean_on_startup=clean_on_startup,
-    )
-    return cleaner.cleanup()
+        redis_url=redis_url,
+        cache_expire_hours=cache_expire_hours,
+    ))
 
 
 # 命令行入口
@@ -263,9 +399,10 @@ if __name__ == "__main__":
     
     parser = argparse.ArgumentParser(description="清理下载文件")
     parser.add_argument("--dir", default="downloads", help="下载目录路径")
-    parser.add_argument("--max-age", type=int, default=7, help="文件最大保留天数")
     parser.add_argument("--max-size", type=int, default=5000, help="目录最大大小 MB")
-    parser.add_argument("--dry-run", action="store_true", help="只显示将要删除的文件")
+    parser.add_argument("--redis-url", default=None, help="Redis 连接 URL")
+    parser.add_argument("--cache-hours", type=int, default=1, help="缓存过期时间（小时）")
+    parser.add_argument("--dry-run", action="store_true", help="只显示将要删除的内容")
     
     args = parser.parse_args()
     
@@ -273,29 +410,45 @@ if __name__ == "__main__":
     logger.remove()
     logger.add(lambda msg: print(msg, end=""), format="{message}")
     
-    if args.dry_run:
+    async def main():
         cleaner = DownloadCleaner(
             download_dir=args.dir,
-            max_age_days=args.max_age,
             max_size_mb=args.max_size,
+            redis_url=args.redis_url,
+            cache_expire_hours=args.cache_hours,
         )
-        files = cleaner.get_all_files()
-        cutoff_time = time.time() - (args.max_age * 86400)
         
-        print(f"\n文件总数: {len(files)}")
-        print(f"目录大小: {cleaner.get_dir_size() / 1024 / 1024:.2f} MB\n")
-        
-        old_files = [f for f in files if f[1] < cutoff_time]
-        if old_files:
-            print(f"超过 {args.max_age} 天的文件 ({len(old_files)} 个):")
-            for fp, mtime, size in old_files[:10]:
-                print(f"  {fp.name} - {datetime.fromtimestamp(mtime)} - {size / 1024:.1f} KB")
-            if len(old_files) > 10:
-                print(f"  ... 还有 {len(old_files) - 10} 个文件")
-    else:
-        result = run_cleanup(
-            download_dir=args.dir,
-            max_age_days=args.max_age,
-            max_size_mb=args.max_size,
-        )
-        print(f"\n清理结果: {result}")
+        if args.dry_run:
+            # 显示统计信息
+            local_dirs = cleaner.get_local_image_dirs()
+            print(f"\n本地目录统计:")
+            print(f"  图片目录数: {len(local_dirs)}")
+            print(f"  总大小: {cleaner.get_dir_size() / 1024 / 1024:.2f} MB\n")
+            
+            # 获取缓存信息
+            cached_ids = await cleaner.get_cached_content_ids()
+            print(f"Redis 缓存统计:")
+            print(f"  缓存内容数: {len(cached_ids)}\n")
+            
+            # 显示孤儿目录
+            buffer_seconds = args.cache_hours * 3600 * 2
+            orphan_dirs = []
+            for dir_path, content_key, mtime in local_dirs:
+                if content_key not in cached_ids and time.time() - mtime >= buffer_seconds:
+                    dir_size = sum(f.stat().st_size for f in dir_path.rglob("*") if f.is_file())
+                    orphan_dirs.append((dir_path, dir_size, datetime.fromtimestamp(mtime)))
+            
+            if orphan_dirs:
+                print(f"孤儿目录（无缓存关联，可删除）:")
+                for dir_path, dir_size, mtime in orphan_dirs[:10]:
+                    print(f"  {dir_path.name} - {mtime} - {dir_size / 1024:.1f} KB")
+                if len(orphan_dirs) > 10:
+                    print(f"  ... 还有 {len(orphan_dirs) - 10} 个目录")
+                print(f"\n总计可释放: {sum(d[1] for d in orphan_dirs) / 1024 / 1024:.2f} MB")
+            
+            await cleaner.close_redis()
+        else:
+            result = await cleaner.cleanup_async()
+            print(f"\n清理结果: {result}")
+    
+    asyncio.run(main())

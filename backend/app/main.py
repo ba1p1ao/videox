@@ -128,23 +128,39 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("💾 使用内存缓存")
     
-    # 启动时清理下载文件（异步后台执行）
+    # 启动时清理下载文件和 Redis 缓存，并启动定时清理任务
     if settings.CLEANUP_ENABLED:
         import asyncio
         from .scripts.cleanup import DownloadCleaner
         
-        async def run_cleanup():
-            try:
-                cleaner = DownloadCleaner(
-                    download_dir=settings.DOWNLOAD_DIR,
-                    max_age_days=settings.CLEANUP_MAX_AGE_DAYS,
-                    max_size_mb=settings.CLEANUP_MAX_SIZE_MB,
-                )
-                cleaner.run_startup_cleanup()
-            except Exception as e:
-                logger.warning(f"清理下载文件失败: {e}")
+        async def periodic_cleanup():
+            """定期清理任务 - 与 Redis 缓存同步"""
+            # 计算缓存过期时间（小时）
+            cache_hours = settings.CACHE_EXPIRE_SECONDS // 3600
+            
+            cleaner = DownloadCleaner(
+                download_dir=settings.DOWNLOAD_DIR,
+                max_size_mb=settings.CLEANUP_MAX_SIZE_MB,
+                redis_url=settings.REDIS_URL if settings.REDIS_ENABLED else None,
+                cache_expire_hours=cache_hours,
+            )
+            
+            while True:
+                try:
+                    # 等待指定间隔
+                    await asyncio.sleep(settings.CLEANUP_INTERVAL_MINUTES * 60)
+                    logger.info("🔄 执行定时清理...")
+                    await cleaner.cleanup_async()
+                except asyncio.CancelledError:
+                    logger.info("定时清理任务已取消")
+                    break
+                except Exception as e:
+                    logger.warning(f"定时清理失败: {e}")
+                    await asyncio.sleep(60)  # 出错后等待 1 分钟再重试
         
-        asyncio.create_task(run_cleanup())
+        # 启动定时清理任务
+        asyncio.create_task(periodic_cleanup())
+        logger.info(f"⏰ 定时清理已启动，间隔 {settings.CLEANUP_INTERVAL_MINUTES} 分钟")
     
     yield
     
