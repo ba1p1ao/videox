@@ -249,9 +249,17 @@ async def parse_video(
         # 执行解析
         video_info = await downloader.parse_video_info(body.url, cookies=body.cookies)
         
-        # 缓存结果
+        # 缓存结果（过滤掉 base64 数据以减小缓存大小）
         if video_info:
-            await cache.set_parse_result(body.url, video_info.model_dump())
+            cache_data = video_info.model_dump()
+            # 清理 formats 中的 base64 URL（以 data: 开头的 URL）
+            for fmt in cache_data.get("formats", []):
+                if fmt.get("url", "").startswith("data:"):
+                    fmt["url"] = None
+            # 清理 thumbnail 中的 base64 数据
+            if cache_data.get("thumbnail", "").startswith("data:"):
+                cache_data["thumbnail"] = None
+            await cache.set_parse_result(body.url, cache_data)
         
         return ParseResponse(
             success=True,
