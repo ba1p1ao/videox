@@ -236,13 +236,19 @@
               <div v-if="isMultiPart && selectedPart" class="selected-part-info">
                 <el-button 
                   size="small" 
-                  @click="selectedPart = null"
+                  @click="selectedPart = null; partVideoInfo = null"
                   link
                 >
                   <el-icon><ArrowLeft /></el-icon>
                   返回分P选择
                 </el-button>
                 <span class="part-label">当前选择：{{ selectedPart.quality }}</span>
+              </div>
+            
+              <!-- 分P清晰度加载状态 -->
+              <div v-if="loadingPartFormats" class="loading-formats">
+                <el-icon class="is-loading"><Loading /></el-icon>
+                <span>正在加载清晰度选项...</span>
               </div>
             
               <!-- 快速下载按钮 -->
@@ -585,19 +591,39 @@ const multiPartList = computed(() => {
 
 // 当前选中的分P
 const selectedPart = ref(null)
+// 分P清晰度加载状态
+const loadingPartFormats = ref(false)
+// 分P视频信息（包含清晰度选项）
+const partVideoInfo = ref(null)
 
-// 选中分P后显示的格式列表（非多P格式）
+// 选中分P后显示的格式列表（从分P视频信息中获取）
 const partFormats = computed(() => {
   if (!isMultiPart.value || !selectedPart.value) return []
   
-  // 对于多P视频，显示非 p\d+ 格式的格式列表（清晰度选择）
-  return videoInfo.value.formats
-    .filter(f => !f.format_id?.match(/^p\d+$/))
-    .filter(f => {
-      const hasVideo = f.vcodec && f.vcodec !== 'none'
-      return hasVideo
-    })
-    .slice(0, 5)
+  // 使用分P视频信息中的格式列表
+  if (partVideoInfo.value?.formats) {
+    return partVideoInfo.value.formats
+      .filter(f => {
+        const hasVideo = f.vcodec && f.vcodec !== 'none'
+        const hasAudio = f.acodec && f.acodec !== 'none'
+        // 过滤掉纯音频格式
+        if (!hasVideo && hasAudio) return false
+        return hasVideo || hasAudio
+      })
+      .sort((a, b) => {
+        const getHeight = (f) => {
+          if (f.resolution) {
+            const match = f.resolution.match(/(\d+)p?$/)
+            return match ? parseInt(match[1]) : 0
+          }
+          return 0
+        }
+        return getHeight(b) - getHeight(a)
+      })
+      .slice(0, 10)
+  }
+  
+  return []
 })
 
 // 显示的格式列表（根据是否是B站多P视频）
@@ -685,9 +711,32 @@ const handleParse = createThrottle(async () => {
 // ==================== 下载视频 ====================
 
 // 选择分P
-function selectPart(fmt) {
+async function selectPart(fmt) {
   selectedPart.value = fmt
-  ElMessage.info(`已选择 ${fmt.quality}`)
+  partVideoInfo.value = null
+  loadingPartFormats.value = true
+  
+  ElMessage.info(`正在获取 ${fmt.quality} 的清晰度选项...`)
+  
+  try {
+    // 从 format_id 中提取分P索引 (p1 -> 1, p2 -> 2, ...)
+    const partIndex = parseInt(fmt.format_id.slice(1))
+    
+    // 调用 API 获取该分P的清晰度信息
+    const res = await videoApi.parsePart(url.value, partIndex)
+    
+    if (res.success && res.video_info) {
+      partVideoInfo.value = res.video_info
+      ElMessage.success(`已加载 ${fmt.quality} 的清晰度选项`)
+    } else {
+      ElMessage.error(res.message || '获取清晰度失败')
+    }
+  } catch (err) {
+    console.error('[Parse Part Error]', err)
+    ElMessage.error('获取清晰度失败')
+  } finally {
+    loadingPartFormats.value = false
+  }
 }
 
 /**
@@ -700,20 +749,16 @@ const handleDownload = createThrottle(async (formatId) => {
   
   downloadingFormat.value = formatId
   
-  // B站多P视频：组合 format_id
+  // B站多P视频：构建正确的下载参数
   let actualFormatId = formatId
   let actualUrl = url.value
   
   if (isMultiPart.value && selectedPart.value) {
-    // 使用选中的分P format_id
-    actualFormatId = selectedPart.value.format_id
-    // 如果 URL 已有参数，追加 p 参数
+    // 使用选中的分P索引构建 URL
     const pIndex = selectedPart.value.format_id.slice(1)
-    if (actualUrl.includes('?')) {
-      actualUrl = actualUrl.replace(/[?&]p=\d+/, '') + `&p=${pIndex}`
-    } else {
-      actualUrl = actualUrl + `?p=${pIndex}`
-    }
+    const baseUrl = actualUrl.split('?')[0]
+    actualUrl = `${baseUrl}?p=${pIndex}`
+    // formatId 已经是清晰度的 format_id，不需要修改
   }
   
   // 先尝试获取直链
@@ -759,8 +804,8 @@ const handleDownload = createThrottle(async (formatId) => {
   }
 
   const downloadParams = {
-    url: url.value,
-    format_id: formatId,
+    url: actualUrl,
+    format_id: actualFormatId,
     quality: quality.value,
     audio_only: quality.value === 'audio',
     video_title: videoInfo.value?.title,
@@ -814,8 +859,16 @@ const handleQuickDownload = createThrottle(async () => {
     filename: '准备下载...',
   }
 
+  // B站多P视频：构建正确的下载参数
+  let actualUrl = url.value
+  if (isMultiPart.value && selectedPart.value) {
+    const pIndex = selectedPart.value.format_id.slice(1)
+    const baseUrl = actualUrl.split('?')[0]
+    actualUrl = `${baseUrl}?p=${pIndex}`
+  }
+
   const downloadParams = {
-    url: url.value,
+    url: actualUrl,
     quality: quality.value,
     audio_only: quality.value === 'audio',
     video_title: videoInfo.value?.title,
@@ -1044,6 +1097,21 @@ onUnmounted(() => {
   .el-icon {
     font-size: 2rem;
     color: rgba(255, 255, 255, 0.3);
+  }
+}
+
+// 分P清晰度加载状态
+.loading-formats {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 20px;
+  color: var(--text-muted, rgba(255, 255, 255, 0.6));
+  font-size: 14px;
+  
+  .el-icon {
+    font-size: 18px;
   }
 }
 </style>

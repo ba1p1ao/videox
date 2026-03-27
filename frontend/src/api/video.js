@@ -204,6 +204,16 @@ export const videoApi = {
   },
 
   /**
+   * 解析多P视频指定分P的清晰度信息
+   * @param {string} url - 视频 URL
+   * @param {number} partIndex - 分P索引，从1开始
+   * @param {string} cookies - Cookie 字符串（可选）
+   */
+  parsePart(url, partIndex, cookies = '') {
+    return api.post('/parse/part', { url, part_index: partIndex, cookies: cookies || undefined })
+  },
+
+  /**
    * 获取直链
    * @param {string} url - 视频 URL
    * @param {string} formatId - 格式 ID
