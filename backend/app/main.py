@@ -128,6 +128,24 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("💾 使用内存缓存")
     
+    # 启动时清理下载文件（异步后台执行）
+    if settings.CLEANUP_ENABLED:
+        import asyncio
+        from .scripts.cleanup import DownloadCleaner
+        
+        async def run_cleanup():
+            try:
+                cleaner = DownloadCleaner(
+                    download_dir=settings.DOWNLOAD_DIR,
+                    max_age_days=settings.CLEANUP_MAX_AGE_DAYS,
+                    max_size_mb=settings.CLEANUP_MAX_SIZE_MB,
+                )
+                cleaner.run_startup_cleanup()
+            except Exception as e:
+                logger.warning(f"清理下载文件失败: {e}")
+        
+        asyncio.create_task(run_cleanup())
+    
     yield
     
     # 关闭时执行

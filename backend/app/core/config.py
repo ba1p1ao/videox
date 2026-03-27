@@ -30,6 +30,11 @@ class Settings(BaseSettings):
     DOWNLOAD_DIR: str = Field(default="downloads")
     MAX_CONCURRENT_DOWNLOADS: int = Field(default=20)
     
+    # 下载文件清理配置
+    CLEANUP_ENABLED: bool = Field(default=True, description="是否启用下载文件清理")
+    CLEANUP_MAX_AGE_DAYS: int = Field(default=7, description="文件最大保留天数")
+    CLEANUP_MAX_SIZE_MB: int = Field(default=5000, description="下载目录最大大小 MB")
+    
     # HTTP 客户端配置
     HTTP_TIMEOUT: int = Field(default=30, description="HTTP 请求超时时间（秒）")
     HTTP_CONNECT_TIMEOUT: int = Field(default=10, description="HTTP 连接超时时间（秒）")
